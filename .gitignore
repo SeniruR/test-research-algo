@@ -1,0 +1,14 @@
+# Ignore Python cache and local outputs
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+output/
+*.wav
+*.mp4
+*.mov
+
+# Colab / IDE
+.ipynb_checkpoints/
+.DS_Store
