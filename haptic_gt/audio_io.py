@@ -1,4 +1,4 @@
-"""Audio extraction, loading, and export."""
+"""Audio extraction, loading, and export (Sound2Hap-compatible rates)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,8 @@ import librosa
 import numpy as np
 import soundfile as sf
 
-TARGET_SR = 44_100
+INPUT_SR = 44_100
+VIB_SR = 8_000
 
 
 def _require_ffmpeg() -> str:
@@ -25,21 +26,17 @@ def _require_ffmpeg() -> str:
 
 def extract_audio_from_video(
     video_path: str | Path,
-    output_path: str | Path | None = None,
-    sr: int = TARGET_SR,
-) -> tuple[np.ndarray, int]:
-    """
-    Extract mono audio from a video file at the given sample rate.
-
-    Returns (audio, sample_rate). If output_path is set, also writes a WAV file.
-    """
+    output_path: str | Path,
+    sr: int = INPUT_SR,
+) -> Path:
+    """Extract mono 16-bit PCM WAV at 44.1 kHz from a video file."""
     video_path = Path(video_path)
+    output_path = Path(output_path)
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
 
     ffmpeg = _require_ffmpeg()
-    wav_path = Path(output_path) if output_path else video_path.with_suffix(".wav")
-
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         ffmpeg,
         "-y",
@@ -52,26 +49,34 @@ def extract_audio_from_video(
         str(sr),
         "-sample_fmt",
         "s16",
-        str(wav_path),
+        str(output_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg failed:\n{result.stderr}")
-
-    audio, loaded_sr = librosa.load(wav_path, sr=sr, mono=True)
-    return audio.astype(np.float32), loaded_sr
+    return output_path
 
 
-def load_audio(path: str | Path, sr: int = TARGET_SR) -> tuple[np.ndarray, int]:
-    """Load mono audio from a WAV/MP3/etc. file."""
-    audio, loaded_sr = librosa.load(path, sr=sr, mono=True)
-    return audio.astype(np.float32), loaded_sr
+def prepare_source_wav(
+    audio_path: str | Path,
+    output_path: str | Path,
+    sr: int = INPUT_SR,
+) -> Path:
+    """Convert/load audio to mono 16-bit PCM WAV at 44.1 kHz."""
+    audio_path = Path(audio_path)
+    output_path = Path(output_path)
+    if not audio_path.exists():
+        raise FileNotFoundError(f"Audio not found: {audio_path}")
+
+    audio, _ = librosa.load(audio_path, sr=sr, mono=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(output_path, np.clip(audio, -1.0, 1.0), sr, subtype="PCM_16")
+    return output_path
 
 
-def save_haptic(path: str | Path, audio: np.ndarray, sr: int = TARGET_SR) -> Path:
-    """Write a mono haptic track as 16-bit PCM WAV."""
+def save_haptic(path: str | Path, audio: np.ndarray, sr: int = VIB_SR) -> Path:
+    """Write a mono haptic track as 16-bit PCM WAV (default 8 kHz)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    clipped = np.clip(audio, -1.0, 1.0)
-    sf.write(path, clipped, sr, subtype="PCM_16")
+    sf.write(path, np.clip(audio, -1.0, 1.0), sr, subtype="PCM_16")
     return path

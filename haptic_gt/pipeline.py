@@ -1,60 +1,44 @@
-"""End-to-end pipeline: video/audio in -> four candidate haptic tracks out."""
+"""End-to-end pipeline aligned with Sound2Hap signal processing."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
+from haptic_gt.algorithms import freq_shift, haptic_gen, percept, pitch_match
+from haptic_gt.audio_io import INPUT_SR, VIB_SR, extract_audio_from_video, prepare_source_wav
 
-from .algorithm_a import perception_mapping
-from .algorithm_b import frequency_shifting
-from .algorithm_c import pitch_matching
-from .algorithm_d import haptic_gen
-from .audio_io import TARGET_SR, extract_audio_from_video, load_audio, save_haptic
+OUTPUT_NAMES = {
+    "source_audio": "source_audio.wav",
+    "algorithm_a_perception_mapping": "algorithm_a_perception_mapping.wav",
+    "algorithm_b_frequency_shifting": "algorithm_b_frequency_shifting.wav",
+    "algorithm_c_pitch_matching": "algorithm_c_pitch_matching.wav",
+    "algorithm_d_haptic_gen": "algorithm_d_haptic_gen.wav",
+}
 
 
 @dataclass
 class CandidateTracks:
-    """Paths and in-memory arrays for all four algorithm outputs."""
+    """Paths to source audio and four Sound2Hap candidate haptic tracks."""
 
-    source_audio: np.ndarray
-    sample_rate: int
-    algorithm_a: np.ndarray
-    algorithm_b: np.ndarray
-    algorithm_c: np.ndarray
-    algorithm_d: np.ndarray
+    source_wav: Path
+    algorithm_a: Path
+    algorithm_b: Path
+    algorithm_c: Path
+    algorithm_d: Path
     output_dir: Path
+    input_sample_rate: int = INPUT_SR
+    output_sample_rate: int = VIB_SR
+    pitch_match_info: dict | None = None
 
     def save_all(self) -> dict[str, Path]:
-        """Write source audio and all candidate tracks to output_dir."""
-        sr = self.sample_rate
-        out = {
-            "source_audio": save_haptic(
-                self.output_dir / "source_audio.wav", self.source_audio, sr
-            ),
-            "algorithm_a_perception_mapping": save_haptic(
-                self.output_dir / "algorithm_a_perception_mapping.wav",
-                self.algorithm_a,
-                sr,
-            ),
-            "algorithm_b_frequency_shifting": save_haptic(
-                self.output_dir / "algorithm_b_frequency_shifting.wav",
-                self.algorithm_b,
-                sr,
-            ),
-            "algorithm_c_pitch_matching": save_haptic(
-                self.output_dir / "algorithm_c_pitch_matching.wav",
-                self.algorithm_c,
-                sr,
-            ),
-            "algorithm_d_haptic_gen": save_haptic(
-                self.output_dir / "algorithm_d_haptic_gen.wav",
-                self.algorithm_d,
-                sr,
-            ),
+        return {
+            "source_audio": self.source_wav,
+            "algorithm_a_perception_mapping": self.algorithm_a,
+            "algorithm_b_frequency_shifting": self.algorithm_b,
+            "algorithm_c_pitch_matching": self.algorithm_c,
+            "algorithm_d_haptic_gen": self.algorithm_d,
         }
-        return out
 
 
 def generate_candidate_tracks(
@@ -62,43 +46,48 @@ def generate_candidate_tracks(
     output_dir: str | Path,
     *,
     from_video: bool = True,
-    target_rms: float = 0.1,
-    sr: int = TARGET_SR,
+    content_type: str = "game",
 ) -> CandidateTracks:
     """
-    Run the full processing engine on one video or audio file.
+    Run the Sound2Hap processing engine on one video or audio file.
 
     Parameters
     ----------
     input_path:
-        Path to a video (mp4, mov, ...) or audio file (wav, mp3, ...).
+        Video (mp4, mov, ...) or audio (wav, mp3, ...) path.
     output_dir:
-        Directory where WAV outputs will be written.
+        Directory for 44.1 kHz source + 8 kHz haptic WAV outputs.
     from_video:
-        If True, treat input as video and extract audio via ffmpeg.
-        If False, load input directly as audio.
-    target_rms:
-        Target RMS level for all candidate tracks after normalization.
+        Extract audio with ffmpeg when True.
+    content_type:
+        Perceptual mapping content profile: ``"game"`` (games/movies) or ``"music"``.
     """
     input_path = Path(input_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    source_wav = output_dir / OUTPUT_NAMES["source_audio"]
     if from_video:
-        audio, loaded_sr = extract_audio_from_video(
-            input_path,
-            output_path=output_dir / "source_audio.wav",
-            sr=sr,
-        )
+        extract_audio_from_video(input_path, source_wav, sr=INPUT_SR)
     else:
-        audio, loaded_sr = load_audio(input_path, sr=sr)
+        prepare_source_wav(input_path, source_wav, sr=INPUT_SR)
+
+    out_a = output_dir / OUTPUT_NAMES["algorithm_a_perception_mapping"]
+    out_b = output_dir / OUTPUT_NAMES["algorithm_b_frequency_shifting"]
+    out_c = output_dir / OUTPUT_NAMES["algorithm_c_pitch_matching"]
+    out_d = output_dir / OUTPUT_NAMES["algorithm_d_haptic_gen"]
+
+    percept.process_file(source_wav, out_a, content=content_type)
+    freq_shift.process_file(source_wav, out_b)
+    pitch_info = pitch_match.process_file(source_wav, out_c)
+    haptic_gen.process_file(source_wav, out_d)
 
     return CandidateTracks(
-        source_audio=audio,
-        sample_rate=loaded_sr,
-        algorithm_a=perception_mapping(audio, loaded_sr, target_rms),
-        algorithm_b=frequency_shifting(audio, loaded_sr, target_rms),
-        algorithm_c=pitch_matching(audio, loaded_sr, target_rms),
-        algorithm_d=haptic_gen(audio, loaded_sr, target_rms),
+        source_wav=source_wav,
+        algorithm_a=out_a,
+        algorithm_b=out_b,
+        algorithm_c=out_c,
+        algorithm_d=out_d,
         output_dir=output_dir,
+        pitch_match_info=pitch_info,
     )
