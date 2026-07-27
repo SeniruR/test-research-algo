@@ -12,3 +12,6 @@ output/
 # Colab / IDE
 .ipynb_checkpoints/
 .DS_Store
+
+papers/
+sample start for main flow/
