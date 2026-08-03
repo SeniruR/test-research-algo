@@ -15,3 +15,15 @@ output/
 
 papers/
 sample start for main flow/
+sound2hap/
+sample/
+vibrator-android/
+# Local experiment artifacts (keep .tex docs)
+experiments/*.pdf
+experiments/*.aux
+experiments/*.log
+experiments/*.out
+experiments/*.toc
+experiments/*.synctex.gz
+experiments/*.fls
+experiments/*.fdb_latexmk

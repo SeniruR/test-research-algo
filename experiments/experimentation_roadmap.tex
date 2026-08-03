@@ -1,0 +1,138 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{hyperref}
+
+\title{Experimentation Roadmap\\
+\large Haptic Ground-Truth Pipeline}
+\author{Project Notes}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+Short record of approaches we tried for video-to-haptic ground-truth generation, their outcomes, and whether we changed approach or continued.
+\end{abstract}
+
+\section{Goal}
+From a short video, make four vibration sound files (algorithms A-D) so people can feel and rate them.
+We want continuous flow (like thunder rumble) plus clear hits (like blasts), similar to a dense hand made reference map not only sparse spikes.
+
+\section{Current stack}
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+  \item Pull mono sound from the video (44.1\,kHz).
+  \item Find candidate moments, then classify them with a sound model (AST) and a video model (ViViT), and merge into an event list (\texttt{events.json}).
+  \item Keep only chosen event types (weather, gunshot, explosion, vehicle) and build a filtered audio clip (\texttt{gated\_audio.wav}).
+  \item Run Sound2Hap A-D: quiet continuous vibration underneath (bed) plus stronger short hits on top (accents). The four algorithms themselves are unchanged.
+\end{enumerate}
+
+\section{Terms}
+\begin{itemize}[leftmargin=*,itemsep=3pt]
+  \item Fixed list of event types we care about (taxonomy).
+  \item Model that links images, audio, and text in one shared space (ImageBind).
+  \item Finds objects in each video frame with boxes (YOLO).
+  \item Break one long blob of sound into separate bangs at each loud peak (peak split).
+  \item Snap the event start to the exact moment the bang begins (onset refine).
+  \item Keep audio only at the times of selected event types (temporal + category gate).
+  \item Only pass short sharp bangs, ignore long rumble (impulsive gate).
+  \item How many real events we find versus miss (detection recall).
+  \item Scan every few seconds for steady sounds, and snap bangs using a sudden change in the spectrum (hop + flux onset).
+  \item Automatically boost quiet parts so they are not ignored (AGC level).
+  \item Quiet continuous vibration that runs under the whole clip (bed).
+  \item Mute the quietest share of the track so real silence stays silent (percentile silence).
+  \item Squeeze the gap between loud and quiet so soft rumble still feels (envelope-exponent compression).
+  \item Average nearby gain values so level changes are soft, not jumpy (mean-smooth compression).
+  \item Remember recent loud levels so a bang does not over boost the quiet parts next to it (peak hold).
+  \item Scale the quiet continuous layer to a target strength (normalize bed).
+  \item Strong short hits placed on top of the quiet layer (accents).
+  \item Phone code that turns WAV loudness into vibration strength (parser).
+\end{itemize}
+
+\section{Experiments}
+
+\subsection*{Finding what happens in the video}
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{What we tried} & \textbf{Outcome} & \textbf{Changed to / Continued?} \\
+\midrule
+Early notebook with shared image-audio-text model (ImageBind) / video model (VideoMAE) & Incomplete, because it was not linked to Sound2Hap & \textbf{Changed to} frozen sound model (AST) + video model (ViViT) package \\
+\addlinespace
+Motion-to-vibration idea (HapticLens style) & No named event types (weather, gunshot, etc.) & \textbf{Changed to} fixed event list (taxonomy) + Sound2Hap A-D \\
+\addlinespace
+Ask ImageBind with text queries for events & Too heavy for Colab flow & \textbf{Changed to} AST + ViViT only \\
+\addlinespace
+Find objects in frames with boxes (YOLO) for events & Misses off-screen or sound-only cues & \textbf{Continued} AST + ViViT \\
+\addlinespace
+Colab Google Drive mount & Permission friction for users & \textbf{Changed to} simple file upload \\
+\addlinespace
+Require both sound and video to accept a gunshot & Missed many explosions & \textbf{Changed to} allow sharp bangs from sound alone, and continued detection \\
+\addlinespace
+Merge nearby blasts into one long event & Many blasts became one long event & \textbf{Changed to} break at loud peaks (peak split) + snap bang start (onset refine), and continued \\
+\addlinespace
+Sound2Hap signal-processing A-D & Working candidate generators & \textbf{Continued} (kept as-is, not redesigned) \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection*{Choosing which sounds become vibration}
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{What we tried} & \textbf{Outcome} & \textbf{Changed to / Continued?} \\
+\midrule
+Heavy AI noise removal before anything else & Would damage gunshot/explosion edges & \textbf{Changed to} keep audio only at times of selected event types (temporal + category gate) \\
+\addlinespace
+Pass vehicle rumble and explosions together & Filtered audio dominated by rumble & \textbf{Changed to} only short sharp bangs (impulsive gate) briefly \\
+\addlinespace
+Only short sharp bangs (impulsive gate) & Missed sustained thunder / tank rumble & \textbf{Changed to} allow weather/vehicle again via taxonomy defaults \\
+\addlinespace
+One folder of 4 WAVs per detected event & Not desired for evaluation UX & \textbf{Changed to} one full-length WAV per algorithm (4 total) \\
+\addlinespace
+Skip A-D when no selected events & Empty outputs, Colab shows ``tracks missing'' & \textbf{Continued} by design, because messaging is still unclear \\
+\addlinespace
+Find loud moments first, then classify only those (propose-then-classify) & Faster, but still misses some tank cannons & \textbf{Continued}, because how many real events we find (detection recall) is still incomplete \\
+\addlinespace
+Scan every few seconds for steady sounds + snap bangs via spectrum jumps (hop + flux onset) & Better vehicle/weather coverage, but cannons still often missed & \textbf{Continued} refining thresholds \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\newpage
+\subsection*{Making the vibration dense enough}
+Reference hand-made map \texttt{videoplayback\_output\_haptic\_map[1].json}: about 71\% of short time windows vibrate, typical strength about 50/255, with multi-second continuous runs.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{What we tried} & \textbf{Outcome} & \textbf{Changed to / Continued?} \\
+\midrule
+Run A-D on the full clip as the quiet continuous layer (bed) without boosting quiet parts & Algorithm A often output silence on soft passages & \textbf{Changed to} boost quiet parts first (AGC level), then reshape loud/quiet from the source \\
+\addlinespace
+Mute bed whenever it was quiet relative to the loudest peak & Silenced most of algorithm D's rumble & \textbf{Changed to} mute only the quietest share of the track (percentile silence) \\
+\addlinespace
+Squeeze loud/quiet gap with a simple power curve (envelope-exponent compression) & Barely improved denseness for D & \textbf{Changed to} AGC level + loud/quiet curve taken from the source \\
+\addlinespace
+Average nearby gain values (mean-smooth compression) & Boosted bangs together with the quiet parts next to them & \textbf{Changed to} remember recent loud levels (peak-hold) while boosting \\
+\addlinespace
+Scale the bed by its single loudest sample (normalize bed by peak) & Quiet continuous layer too weak vs strong hits (accents) & \textbf{Changed to} scale bed by a high typical level, not the single peak \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{Key takeaways}
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item Sound2Hap A-D stay as ports of the official scripts. We change context filtering, stitching, and level shaping instead of rewriting the algorithms.
+  \item Finding event times alone is not enough, because vibration that only fires on detected events feels sparse next to a dense hand-made reference. Quiet continuous vibration (bed) plus stronger short hits (accents) is needed for thunder and rumble.
+  \item How many real events we find (detection recall) on annotated tank footage is still incomplete (missed cannons). Better denseness does not replace better detection.
+\end{itemize}
+
+\end{document}

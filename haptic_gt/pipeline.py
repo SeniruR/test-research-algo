@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from haptic_gt.algorithms import freq_shift, haptic_gen, percept, pitch_match
 from haptic_gt.audio_io import INPUT_SR, VIB_SR, extract_audio_from_video, prepare_source_wav
+from haptic_gt.context import detect_events
+from haptic_gt.context.frozen_fusion import DetectedEvent
+from haptic_gt.context.mask import events_for_haptic_gate, resolve_gate_categories
+from haptic_gt.context.taxonomy import load_taxonomy
+from haptic_gt.haptic_synthesis import ContinuousProfile, stitch_algorithm_output
 
 OUTPUT_NAMES = {
     "source_audio": "source_audio.wav",
+    "gated_audio": "gated_audio.wav",
+    "events_json": "events.json",
     "algorithm_a_perception_mapping": "algorithm_a_perception_mapping.wav",
     "algorithm_b_frequency_shifting": "algorithm_b_frequency_shifting.wav",
     "algorithm_c_pitch_matching": "algorithm_c_pitch_matching.wav",
@@ -22,23 +30,53 @@ class CandidateTracks:
     """Paths to source audio and four Sound2Hap candidate haptic tracks."""
 
     source_wav: Path
-    algorithm_a: Path
-    algorithm_b: Path
-    algorithm_c: Path
-    algorithm_d: Path
+    algorithm_a: Path | None
+    algorithm_b: Path | None
+    algorithm_c: Path | None
+    algorithm_d: Path | None
     output_dir: Path
+    haptic_input_wav: Path | None
     input_sample_rate: int = INPUT_SR
     output_sample_rate: int = VIB_SR
     pitch_match_info: dict | None = None
+    events: list[DetectedEvent] | None = None
+    events_json: Path | None = None
+    no_events_detected: bool = False
+    no_haptic_events: bool = False
+    gate_categories_used: list[str] = field(default_factory=list)
 
     def save_all(self) -> dict[str, Path]:
-        return {
-            "source_audio": self.source_wav,
-            "algorithm_a_perception_mapping": self.algorithm_a,
-            "algorithm_b_frequency_shifting": self.algorithm_b,
-            "algorithm_c_pitch_matching": self.algorithm_c,
-            "algorithm_d_haptic_gen": self.algorithm_d,
-        }
+        out: dict[str, Path] = {"source_audio": self.source_wav}
+        if self.algorithm_a and self.algorithm_a.exists():
+            out["algorithm_a_perception_mapping"] = self.algorithm_a
+        if self.algorithm_b and self.algorithm_b.exists():
+            out["algorithm_b_frequency_shifting"] = self.algorithm_b
+        if self.algorithm_c and self.algorithm_c.exists():
+            out["algorithm_c_pitch_matching"] = self.algorithm_c
+        if self.algorithm_d and self.algorithm_d.exists():
+            out["algorithm_d_haptic_gen"] = self.algorithm_d
+        if self.events_json and self.events_json.exists():
+            out["events_json"] = self.events_json
+        if (
+            self.haptic_input_wav is not None
+            and self.haptic_input_wav.exists()
+            and self.haptic_input_wav != self.source_wav
+        ):
+            out["gated_audio"] = self.haptic_input_wav
+        return out
+
+
+def _update_events_json_haptics(
+    events_json: Path,
+    haptic_paths: dict[str, str],
+) -> None:
+    if not events_json.exists():
+        return
+    payload = json.loads(events_json.read_text(encoding="utf-8"))
+    existing = payload.get("haptic_outputs", {})
+    existing.update(haptic_paths)
+    payload["haptic_outputs"] = existing
+    events_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def generate_candidate_tracks(
@@ -47,24 +85,28 @@ def generate_candidate_tracks(
     *,
     from_video: bool = True,
     content_type: str = "game",
+    enable_context_detection: bool = True,
+    taxonomy_path: str | Path | None = None,
+    gate_categories: list[str] | None = None,
+    continuous_haptics: bool = True,
+    continuous_profile: ContinuousProfile | None = None,
 ) -> CandidateTracks:
     """
-    Run the Sound2Hap processing engine on one video or audio file.
+    Run context detection (optional) then Sound2Hap A–D.
 
-    Parameters
-    ----------
-    input_path:
-        Video (mp4, mov, ...) or audio (wav, mp3, ...) path.
-    output_dir:
-        Directory for 44.1 kHz source + 8 kHz haptic WAV outputs.
-    from_video:
-        Extract audio with ffmpeg when True.
-    content_type:
-        Perceptual mapping content profile: ``"game"`` (games/movies) or ``"music"``.
+    When gate-eligible events are detected, haptics are stitched onto a full-length
+    timeline (one WAV per algorithm). When none match gate_categories, haptic
+    generation is skipped.
+
+    With `continuous_haptics` on, each algorithm also renders the full clip as a
+    low-level continuous layer underneath the event accents, so sustained sounds
+    (rumble, rain, engines) keep vibrating instead of leaving silent gaps.
     """
     input_path = Path(input_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    taxonomy = load_taxonomy(taxonomy_path)
+    gate_cats = resolve_gate_categories(taxonomy, gate_categories)
 
     source_wav = output_dir / OUTPUT_NAMES["source_audio"]
     if from_video:
@@ -72,22 +114,95 @@ def generate_candidate_tracks(
     else:
         prepare_source_wav(input_path, source_wav, sr=INPUT_SR)
 
+    events: list[DetectedEvent] | None = None
+    events_json_path: Path | None = None
+    no_events_detected = False
+    no_haptic_events = False
+    haptic_input: Path | None = None
+    gate_events: list[DetectedEvent] = []
+
     out_a = output_dir / OUTPUT_NAMES["algorithm_a_perception_mapping"]
     out_b = output_dir / OUTPUT_NAMES["algorithm_b_frequency_shifting"]
     out_c = output_dir / OUTPUT_NAMES["algorithm_c_pitch_matching"]
     out_d = output_dir / OUTPUT_NAMES["algorithm_d_haptic_gen"]
 
-    percept.process_file(source_wav, out_a, content=content_type)
-    freq_shift.process_file(source_wav, out_b)
-    pitch_info = pitch_match.process_file(source_wav, out_c)
-    haptic_gen.process_file(source_wav, out_d)
+    if enable_context_detection and from_video:
+        event_result = detect_events(
+            input_path,
+            source_wav,
+            output_dir,
+            taxonomy_path=taxonomy_path,
+            write_gated=True,
+            gate_categories=gate_categories,
+        )
+        events = event_result.events
+        events_json_path = event_result.events_json
+        no_events_detected = event_result.no_events_detected
+        no_haptic_events = event_result.no_haptic_events
+        gate_events = events_for_haptic_gate(events or [], taxonomy, gate_categories=gate_cats)
+        if event_result.gated_wav is not None and event_result.gated_wav.exists():
+            haptic_input = event_result.gated_wav
+    elif enable_context_detection:
+        events_json_path = output_dir / OUTPUT_NAMES["events_json"]
+        payload = {
+            "no_events_detected": True,
+            "no_haptic_events": True,
+            "gate_categories_used": gate_cats,
+            "timeline_hz": taxonomy.timeline_hz,
+            "haptic_outputs": {},
+            "events": [],
+        }
+        events_json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        no_events_detected = True
+        no_haptic_events = True
+    else:
+        gate_events = []
+
+    profile = continuous_profile or ContinuousProfile(enabled=continuous_haptics)
+
+    pitch_info = None
+    if gate_events:
+        stitch_algorithm_output(
+            source_wav,
+            gate_events,
+            out_a,
+            percept.process_file,
+            process_kwargs={"content": content_type},
+            continuous=profile,
+        )
+        stitch_algorithm_output(
+            source_wav, gate_events, out_b, freq_shift.process_file, continuous=profile
+        )
+        stitch_algorithm_output(
+            source_wav, gate_events, out_c, pitch_match.process_file, continuous=profile
+        )
+        stitch_algorithm_output(
+            source_wav, gate_events, out_d, haptic_gen.process_file, continuous=profile
+        )
+
+        if events_json_path is not None:
+            _update_events_json_haptics(
+                events_json_path,
+                {
+                    "algorithm_a": OUTPUT_NAMES["algorithm_a_perception_mapping"],
+                    "algorithm_b": OUTPUT_NAMES["algorithm_b_frequency_shifting"],
+                    "algorithm_c": OUTPUT_NAMES["algorithm_c_pitch_matching"],
+                    "algorithm_d": OUTPUT_NAMES["algorithm_d_haptic_gen"],
+                },
+            )
 
     return CandidateTracks(
         source_wav=source_wav,
-        algorithm_a=out_a,
-        algorithm_b=out_b,
-        algorithm_c=out_c,
-        algorithm_d=out_d,
+        algorithm_a=out_a if gate_events else None,
+        algorithm_b=out_b if gate_events else None,
+        algorithm_c=out_c if gate_events else None,
+        algorithm_d=out_d if gate_events else None,
         output_dir=output_dir,
+        haptic_input_wav=haptic_input,
         pitch_match_info=pitch_info,
+        events=events,
+        events_json=events_json_path,
+        no_events_detected=no_events_detected,
+        no_haptic_events=no_haptic_events,
+        gate_categories_used=gate_cats,
     )

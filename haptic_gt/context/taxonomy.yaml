@@ -1,0 +1,124 @@
+timeline_hz: 100
+context_detector_threshold: 0.85
+encoder_threshold: 0.35
+impulsive_encoder_threshold: 0.30
+# Lower threshold for sustained categories (vehicle, weather) — they score lower than explosions
+sustained_encoder_threshold: 0.25
+# Minimum seconds between impulsive peaks (separate shots / blasts)
+impulsive_min_peak_distance_sec: 0.7
+# Half-width used as minimum post-onset content for impulsive gates
+impulsive_event_half_width_sec: 0.45
+impulsive_onset_search_radius_sec: 0.75
+impulsive_decay_tail_sec: 0.85
+impulsive_decay_threshold: 0.12
+# Short pre-roll before detected onset (gate start)
+impulsive_pre_roll_sec: 0.08
+# Cap sustained (vehicle, etc.) span in events.json / optional gate
+sustained_max_gate_sec: 2.5
+# Onset proposal stage (before AST/ViViT)
+proposal_rms_hop_ms: 5.0
+proposal_threshold_ratio: 0.18
+proposal_search_pad_sec: 0.75
+proposal_window_sec: 1.0
+# Sparse scan for sustained sounds (vehicle, human activity) without sharp onsets
+proposal_sustained_hop_sec: 2.0
+# Impulsive peak snap: search around classifier hint, snap via spectral flux
+impulsive_onset_back_sec: 0.6
+impulsive_onset_forward_sec: 1.2
+onset_flux_hop_ms: 5.0
+onset_flux_min_ratio: 0.45
+
+categories:
+  weather:
+    audioset_labels:
+      - Thunder
+      - Rain
+      - Wind
+      - Rain on surface
+      - Storm
+    kinetics_labels: []
+    context_token_labels:
+      - thunder
+      - storm
+      - rain
+    audio_weight: 0.8
+    video_weight: 0.2
+    # Thunder is an impulsive transient — snap onset via spectral flux
+    impulsive: true
+    include_in_haptic_gate: true
+
+  gunshot:
+    audioset_labels:
+      - Gunshot, gunfire
+      - Machine gun
+      - Cap gun
+      - Fusillade
+    kinetics_labels:
+      - shooting gun
+      - playing paintball
+    context_token_labels:
+      - gunshot
+      - gunfire
+    audio_weight: 0.7
+    video_weight: 0.3
+    require_context_or_both: false
+    impulsive: true
+    include_in_haptic_gate: true
+
+  explosion:
+    audioset_labels:
+      - Explosion
+      - Artillery fire
+      - Fireworks
+      - Burst, pop
+      - Boom
+    kinetics_labels:
+      - exploding firecrackers
+    context_token_labels:
+      - explosion
+      - boom
+      - artillery
+      - cannon
+    audio_weight: 0.7
+    video_weight: 0.3
+    require_context_or_both: false
+    impulsive: true
+    include_in_haptic_gate: true
+
+  vehicle:
+    audioset_labels:
+      - Vehicle
+      - Engine
+      - Truck
+      - Motor vehicle (road)
+      - Idling
+      - Tank
+    kinetics_labels:
+      - driving car
+      - riding a bike
+      - motorcycling
+    context_token_labels:
+      - engine_rumble
+      - vehicle
+      - tank
+    audio_weight: 0.75
+    video_weight: 0.25
+    # Sustained rumble — not impulsive, lower confidence threshold handled by encoder_threshold
+    impulsive: false
+    include_in_haptic_gate: true
+
+  human_activity:
+    audioset_labels:
+      - Chainsaw
+      - Sawing
+      - Wood
+    kinetics_labels:
+      - chopping wood
+      - cutting trees
+      - using axe
+    context_token_labels:
+      - sawing
+      - chainsaw
+    audio_weight: 0.4
+    video_weight: 0.6
+    include_in_haptic_gate: false
