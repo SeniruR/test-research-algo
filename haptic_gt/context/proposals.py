@@ -68,8 +68,15 @@ def merge_proposal_windows(
     windows: list[ProposalWindow],
     *,
     merge_gap_sec: float = 0.35,
+    min_center_gap_sec: float | None = None,
 ) -> list[ProposalWindow]:
-    """Merge overlapping or nearly-adjacent proposal windows."""
+    """
+    Merge overlapping or nearly-adjacent proposal windows.
+
+    Distinct transient centers at least ``min_center_gap_sec`` apart are kept
+    separate even when padded windows touch. Without that guard, a quiet early
+    cannon and a louder later rumble collapse into one late-centered proposal.
+    """
     if not windows:
         return []
 
@@ -77,7 +84,12 @@ def merge_proposal_windows(
     merged: list[ProposalWindow] = [ordered[0]]
     for win in ordered[1:]:
         prev = merged[-1]
-        if win.start_sec <= prev.end_sec + merge_gap_sec:
+        centers_far = (
+            min_center_gap_sec is not None
+            and abs(win.center_sec - prev.center_sec) >= min_center_gap_sec
+        )
+        windows_touch = win.start_sec <= prev.end_sec + merge_gap_sec
+        if windows_touch and not centers_far:
             merged[-1] = ProposalWindow(
                 center_sec=win.center_sec
                 if win.rms_score > prev.rms_score
@@ -153,7 +165,40 @@ def propose_onsets(
             )
         )
 
-    return merge_proposal_windows(windows)
+    # Spectral-flux proposals catch sharp HF attacks that are quieter in RMS
+    # (common for early muzzle blast vs later rumble / echo).
+    from haptic_gt.context.onset_refine import _spectral_flux
+
+    flux_times, flux = _spectral_flux(
+        audio, sr, hop_ms=taxonomy.onset_flux_hop_ms
+    )
+    if flux.size > 0:
+        flux_peak = float(np.max(flux))
+        if flux_peak >= 1e-12:
+            flux_thr = flux_peak * taxonomy.onset_flux_min_ratio
+            flux_hop_sec = taxonomy.onset_flux_hop_ms / 1000.0
+            flux_min_dist = max(1, int(round(min_dist_sec / flux_hop_sec)))
+            flux_idxs = _local_peak_indices(
+                flux,
+                min_score=flux_thr,
+                min_distance_frames=flux_min_dist,
+            )
+            for idx in flux_idxs:
+                center = float(flux_times[idx])
+                windows.append(
+                    ProposalWindow(
+                        center_sec=center,
+                        start_sec=max(0.0, center - pad_sec),
+                        end_sec=min(duration_sec, center + pad_sec),
+                        # Rank flux peaks competitively with RMS scores
+                        rms_score=float(flux[idx] / flux_peak) * peak_val,
+                    )
+                )
+
+    return merge_proposal_windows(
+        windows,
+        min_center_gap_sec=min_dist_sec,
+    )
 
 
 def propose_sustained_scan(

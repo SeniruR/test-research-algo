@@ -137,3 +137,36 @@ def test_pipeline_skips_haptics_when_no_gate_events():
 def test_output_names_layout():
     assert OUTPUT_NAMES["algorithm_a_perception_mapping"].endswith(".wav")
     assert OUTPUT_NAMES["gated_audio"] == "gated_audio.wav"
+
+
+def test_manual_events_skips_detector_and_writes_events_json():
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        source_in = td_path / "clip.wav"
+        _write_test_wav(source_in, duration=4.0)
+
+        with patch("haptic_gt.pipeline.stitch_algorithm_output") as mock_stitch:
+            mock_stitch.side_effect = lambda *args, **kwargs: None
+            tracks = generate_candidate_tracks(
+                source_in,
+                td_path / "out",
+                from_video=False,
+                enable_context_detection=True,
+                manual_events={
+                    "category": "explosion",
+                    "start_sec": 0.22,
+                    "peak_sec": 0.24,
+                    "end_sec": 3.66,
+                },
+                gate_categories=["explosion"],
+            )
+
+        assert tracks.events is not None
+        assert len(tracks.events) == 1
+        assert abs(tracks.events[0].peak_sec - 0.24) < 1e-6
+        assert tracks.events_json is not None
+        assert tracks.events_json.exists()
+        payload = tracks.events_json.read_text(encoding="utf-8")
+        assert "0.24" in payload
+        assert '"sources": [' in payload or "manual" in payload
+        assert mock_stitch.call_count == 4

@@ -46,6 +46,25 @@ tracks = generate_candidate_tracks(
 
 Omit `gate_categories` to use taxonomy defaults (`include_in_haptic_gate: true`, currently `gunshot` and `explosion`).
 
+## Manual events (HITL ground truth)
+
+Skip AST/ViViT and trust your start/peak/end marks:
+
+```python
+tracks = generate_candidate_tracks(
+    "tank_cannon.mp4",
+    "output/",
+    manual_events={
+        "category": "explosion",
+        "start_sec": 0.22,
+        "peak_sec": 0.24,
+        "end_sec": 3.66,
+    },
+)
+```
+
+`manual_events` also accepts a list of events or a path to an `events.json` file.
+
 ## Models (all frozen)
 
 | Component | Model |

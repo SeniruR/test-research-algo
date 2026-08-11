@@ -87,8 +87,18 @@ ENABLE_CONTEXT = True  # set False to skip AST/ViViT and re-run Sound2Hap only
 # Categories to include in gated haptics
 GATE_CATEGORIES = ["weather", "gunshot", "explosion", "vehicle", "human_activity"]
 
+# Auto-detect timing (model alone). Only set a dict for HITL override.
+MANUAL_EVENTS = None
+# Example override (optional):
+# MANUAL_EVENTS = {
+#     "category": "explosion",
+#     "start_sec": 0.22,
+#     "peak_sec": 0.24,
+#     "end_sec": 3.66,
+# }
+
 source_wav = OUTPUT_DIR / OUTPUT_NAMES["source_audio"]
-if source_wav.exists() and not ENABLE_CONTEXT:
+if source_wav.exists() and not ENABLE_CONTEXT and MANUAL_EVENTS is None:
   print("Reusing existing source audio:", source_wav)
   input_path = source_wav
   from_video = False
@@ -103,6 +113,7 @@ tracks = generate_candidate_tracks(
     content_type=CONTENT_TYPE,
     enable_context_detection=ENABLE_CONTEXT,
     gate_categories=GATE_CATEGORIES,
+    manual_events=MANUAL_EVENTS,
 )
 saved = tracks.save_all()
 

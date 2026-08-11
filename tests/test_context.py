@@ -46,12 +46,12 @@ def test_event_mask():
     assert mask[0] == 0.0
 
 
-def test_haptic_gate_excludes_vehicle():
+def test_haptic_gate_excludes_human_activity():
     tax = load_taxonomy()
     events = [
         DetectedEvent(
-            category="vehicle",
-            label="Vehicle",
+            category="human_activity",
+            label="Chainsaw",
             start_sec=0.0,
             peak_sec=5.0,
             end_sec=11.0,
@@ -92,15 +92,14 @@ def test_gate_categories_override():
         ),
     ]
     default_gate = events_for_haptic_gate(events, tax)
-    assert len(default_gate) == 1
-    assert default_gate[0].category == "gunshot"
+    assert len(default_gate) == 2
+    assert {e.category for e in default_gate} == {"vehicle", "gunshot"}
 
     custom_gate = events_for_haptic_gate(
         events, tax, gate_categories=["vehicle", "human_activity"]
     )
     assert len(custom_gate) == 1
     assert custom_gate[0].category == "vehicle"
-
 
 def test_multi_event_mask():
     sr = 44100
@@ -124,7 +123,9 @@ def test_resolve_gate_categories_default():
     cats = resolve_gate_categories(tax)
     assert "gunshot" in cats
     assert "explosion" in cats
-    assert "vehicle" not in cats
+    assert "vehicle" in cats
+    assert "weather" in cats
+    assert "human_activity" not in cats
 
 
 def test_propose_onsets_finds_synthetic_peak():
@@ -165,6 +166,93 @@ def test_propose_min_distance():
         assert len(centers) >= 2
         if len(centers) >= 2:
             assert centers[1] - centers[0] >= tax.impulsive_min_peak_distance_sec * 0.8
+
+
+def test_propose_keeps_quiet_early_and_loud_late():
+    """Padded windows must not merge a quiet early blast into a louder later peak."""
+    import tempfile
+    from pathlib import Path
+
+    tax = load_taxonomy()
+    sr = 44100
+    duration = 4.0
+    t = np.arange(int(duration * sr), dtype=np.float32) / sr
+    rng = np.random.default_rng(1)
+    early = rng.standard_normal(t.shape[0]).astype(np.float32)
+    early *= 0.55 * np.exp(-((t - 0.24) ** 2) / (2 * 0.008**2))
+    late = rng.standard_normal(t.shape[0]).astype(np.float32)
+    late *= 1.0 * np.exp(-((t - 1.99) ** 2) / (2 * 0.03**2))
+    audio = (early + late).astype(np.float32)
+
+    with tempfile.TemporaryDirectory() as td:
+        wav_path = Path(td) / "test.wav"
+        sf.write(wav_path, audio, sr, subtype="PCM_16")
+        windows = propose_onsets(wav_path, tax)
+        centers = sorted(w.center_sec for w in windows)
+        assert any(abs(c - 0.24) < 0.15 for c in centers), centers
+        assert any(abs(c - 1.99) < 0.20 for c in centers), centers
+
+
+def test_events_from_manual():
+    from haptic_gt.context.manual_events import events_from_manual
+
+    events = events_from_manual(
+        {
+            "category": "explosion",
+            "start_sec": 0.22,
+            "peak_sec": 0.24,
+            "end_sec": 3.66,
+        }
+    )
+    assert len(events) == 1
+    assert events[0].category == "explosion"
+    assert abs(events[0].peak_sec - 0.24) < 1e-6
+    assert events[0].sources == ["manual"]
+
+
+def test_refine_snaps_late_hint_to_early_blast_on_short_clip():
+    """Short-clip lookback: AST hint near rumble must snap to earlier muzzle."""
+    import tempfile
+    from pathlib import Path
+
+    tax = load_taxonomy()
+    sr = 44100
+    duration = 4.0
+    t = np.arange(int(duration * sr), dtype=np.float32) / sr
+    rng = np.random.default_rng(2)
+    early = rng.standard_normal(t.shape[0]).astype(np.float32)
+    early *= 0.9 * np.exp(-((t - 0.24) ** 2) / (2 * 0.008**2))
+    late = rng.standard_normal(t.shape[0]).astype(np.float32)
+    late *= 1.1 * np.exp(-((t - 1.99) ** 2) / (2 * 0.04**2))
+    audio = (early + late).astype(np.float32)
+
+    with tempfile.TemporaryDirectory() as td:
+        wav_path = Path(td) / "test.wav"
+        sf.write(wav_path, audio, sr, subtype="PCM_16")
+        events = [
+            DetectedEvent(
+                category="explosion",
+                label="Explosion",
+                start_sec=1.5,
+                peak_sec=1.99,
+                end_sec=2.5,
+                confidence=0.67,
+            )
+        ]
+        refined = refine_event_timing(events, wav_path, tax)
+        assert abs(refined[0].peak_sec - 0.24) < 0.12, refined[0].peak_sec
+
+
+def test_dedupe_after_snap_collapses_duplicate_peaks():
+    from haptic_gt.context.frozen_fusion import dedupe_events_by_peak
+
+    events = [
+        DetectedEvent("explosion", "Explosion", 0.17, 0.25, 1.10, 0.64),
+        DetectedEvent("explosion", "Explosion", 0.17, 0.25, 1.10, 0.48),
+    ]
+    merged = dedupe_events_by_peak(events)
+    assert len(merged) == 1
+    assert abs(merged[0].confidence - 0.64) < 1e-6
 
 
 def test_fusion_weather():
@@ -366,12 +454,16 @@ def test_debug_events_table():
 if __name__ == "__main__":
     test_taxonomy_mapping()
     test_event_mask()
-    test_haptic_gate_excludes_vehicle()
+    test_haptic_gate_excludes_human_activity()
     test_gate_categories_override()
     test_multi_event_mask()
     test_resolve_gate_categories_default()
     test_propose_onsets_finds_synthetic_peak()
     test_propose_min_distance()
+    test_propose_keeps_quiet_early_and_loud_late()
+    test_events_from_manual()
+    test_refine_snaps_late_hint_to_early_blast_on_short_clip()
+    test_dedupe_after_snap_collapses_duplicate_peaks()
     test_fusion_weather()
     test_fusion_gunshot_audio_only()
     test_peak_split_multiple_blasts()

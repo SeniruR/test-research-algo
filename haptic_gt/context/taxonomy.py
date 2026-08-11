@@ -35,6 +35,7 @@ class Taxonomy:
     impulsive_onset_search_radius_sec: float = 0.75
     impulsive_onset_back_sec: float = 0.6
     impulsive_onset_forward_sec: float = 1.2
+    impulsive_short_clip_sec: float = 20.0
     impulsive_decay_tail_sec: float = 0.85
     impulsive_decay_threshold: float = 0.12
     impulsive_pre_roll_sec: float = 0.08
@@ -100,6 +101,7 @@ def load_taxonomy(path: str | Path | None = None) -> Taxonomy:
         ),
         impulsive_onset_back_sec=float(raw.get("impulsive_onset_back_sec", 0.6)),
         impulsive_onset_forward_sec=float(raw.get("impulsive_onset_forward_sec", 1.2)),
+        impulsive_short_clip_sec=float(raw.get("impulsive_short_clip_sec", 20.0)),
         impulsive_decay_tail_sec=float(raw.get("impulsive_decay_tail_sec", 0.85)),
         impulsive_decay_threshold=float(raw.get("impulsive_decay_threshold", 0.12)),
         impulsive_pre_roll_sec=float(raw.get("impulsive_pre_roll_sec", 0.08)),

@@ -25,6 +25,8 @@ proposal_sustained_hop_sec: 2.0
 # Impulsive peak snap: search around classifier hint, snap via spectral flux
 impulsive_onset_back_sec: 0.6
 impulsive_onset_forward_sec: 1.2
+# On short clips, look all the way back to t=0 so a late AST hit can snap to the muzzle
+impulsive_short_clip_sec: 20.0
 onset_flux_hop_ms: 5.0
 onset_flux_min_ratio: 0.45
 

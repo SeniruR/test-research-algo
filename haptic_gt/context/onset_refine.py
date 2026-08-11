@@ -87,8 +87,13 @@ def _pick_onset_from_flux(
     flux: np.ndarray,
     *,
     min_ratio: float = 0.45,
+    prefer_earliest: bool = False,
 ) -> float | None:
-    """Pick the strongest onset; break ties toward later peaks."""
+    """Pick onset from flux peaks.
+
+    Default: strongest peak, earliest among near-ties.
+    ``prefer_earliest``: first peak above ``min_ratio`` of max (muzzle before rumble).
+    """
     if flux.size == 0:
         return None
     peak = float(np.max(flux))
@@ -105,17 +110,15 @@ def _pick_onset_from_flux(
     if not candidates:
         return float(times[int(np.argmax(flux))])
 
-    # Prefer the highest flux; among near-ties, pick later (main blast after precursor)
-    best = candidates[0]
-    best_val = flux[best]
-    for idx in candidates[1:]:
-        if flux[idx] > best_val * 1.05:
-            best = idx
-            best_val = flux[idx]
-        elif flux[idx] >= best_val * 0.92 and times[idx] > times[best]:
-            best = idx
-            best_val = flux[idx]
-    return float(times[best])
+    if prefer_earliest:
+        earliest = min(candidates, key=lambda i: float(times[i]))
+        return float(times[earliest])
+
+    # Prefer the highest flux; among near-ties, earliest attack (muzzle), not later rumble
+    best_val = max(float(flux[i]) for i in candidates)
+    strong = [i for i in candidates if float(flux[i]) >= best_val * 0.92]
+    earliest = min(strong, key=lambda i: float(times[i]))
+    return float(times[earliest])
 
 
 def _find_acoustic_peak(
@@ -143,15 +146,22 @@ def _find_impulsive_peak(
     sr: int,
     center_sec: float,
     taxonomy: Taxonomy,
+    *,
+    duration_sec: float,
 ) -> float:
     """
     Snap impulsive events to spectral-flux onset near the classifier hint.
 
     Uses high-frequency-weighted spectral flux (not RMS max), which better
     matches gunshot / explosion attacks. Falls back to RMS if flux is weak.
+
+    On short clips, look back to t=0 so a late AST/ViViT hit (e.g. rumble)
+    can still snap to an earlier muzzle blast.
     """
     back = taxonomy.impulsive_onset_back_sec
     forward = taxonomy.impulsive_onset_forward_sec
+    if duration_sec <= taxonomy.impulsive_short_clip_sec:
+        back = max(back, center_sec)
     hop_ms = taxonomy.onset_flux_hop_ms
     s0 = max(0, int((center_sec - back) * sr))
     s1 = min(len(audio), int((center_sec + forward) * sr))
@@ -160,7 +170,13 @@ def _find_impulsive_peak(
 
     seg = audio[s0:s1]
     times, flux = _spectral_flux(seg, sr, hop_ms=hop_ms)
-    onset_rel = _pick_onset_from_flux(times, flux, min_ratio=taxonomy.onset_flux_min_ratio)
+    short_clip = duration_sec <= taxonomy.impulsive_short_clip_sec
+    onset_rel = _pick_onset_from_flux(
+        times,
+        flux,
+        min_ratio=taxonomy.onset_flux_min_ratio,
+        prefer_earliest=short_clip,
+    )
     if onset_rel is not None:
         return float(s0 / sr + onset_rel)
 
@@ -233,7 +249,9 @@ def refine_event_timing(
         impulsive = bool(cat_cfg and cat_cfg.impulsive)
 
         if impulsive:
-            acoustic_peak = _find_impulsive_peak(audio, sr, ev.peak_sec, taxonomy)
+            acoustic_peak = _find_impulsive_peak(
+                audio, sr, ev.peak_sec, taxonomy, duration_sec=duration_sec
+            )
         else:
             acoustic_peak = _find_acoustic_peak(audio, sr, ev.peak_sec, radius)
 

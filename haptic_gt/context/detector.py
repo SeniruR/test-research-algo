@@ -8,7 +8,7 @@ from pathlib import Path
 
 from haptic_gt.context.context_detectors import symbolic_tokens_from_scores
 from haptic_gt.context.encoders import run_encoder_pass
-from haptic_gt.context.frozen_fusion import DetectedEvent, fuse_events
+from haptic_gt.context.frozen_fusion import DetectedEvent, dedupe_events_by_peak, fuse_events
 from haptic_gt.context.mask import (
     apply_gate,
     event_included_in_gate,
@@ -136,6 +136,8 @@ def detect_events(
 
     events = fuse_events(tokens, encoder_scores, taxonomy=taxonomy)
     events = refine_event_timing(events, source_wav, taxonomy)
+    # Onset snap can collapse late rumble + early muzzle onto the same peak
+    events = dedupe_events_by_peak(events)
 
     gate_events = events_for_haptic_gate(events, taxonomy, gate_categories=gate_cats)
     result = EventResult(

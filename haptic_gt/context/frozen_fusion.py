@@ -44,6 +44,27 @@ def _best_encoder_scores(
     return best
 
 
+def dedupe_events_by_peak(
+    events: list[DetectedEvent],
+    *,
+    margin_sec: float = 0.35,
+) -> list[DetectedEvent]:
+    """Keep the highest-confidence event when peaks collide after refine/snap."""
+    if not events:
+        return []
+    ordered = sorted(events, key=lambda e: (e.category, e.peak_sec, -e.confidence))
+    merged: list[DetectedEvent] = []
+    for ev in ordered:
+        if merged and ev.category == merged[-1].category:
+            if abs(ev.peak_sec - merged[-1].peak_sec) <= margin_sec:
+                if ev.confidence > merged[-1].confidence:
+                    merged[-1] = ev
+                continue
+        merged.append(ev)
+    merged.sort(key=lambda e: e.start_sec)
+    return merged
+
+
 def fuse_events(
     tokens: list[SymbolicToken],
     encoder_scores: list[EncoderScore],
@@ -127,17 +148,4 @@ def fuse_events(
             )
         )
 
-    # Deduplicate near-duplicate peaks only (keep distinct shots/blasts)
-    detected.sort(key=lambda e: (e.category, e.peak_sec, -e.confidence))
-    merged: list[DetectedEvent] = []
-    for ev in detected:
-        if merged and ev.category == merged[-1].category:
-            same_peak = abs(ev.peak_sec - merged[-1].peak_sec) <= 0.35
-            if same_peak:
-                if ev.confidence > merged[-1].confidence:
-                    merged[-1] = ev
-                continue
-        merged.append(ev)
-
-    merged.sort(key=lambda e: e.start_sec)
-    return merged
+    return dedupe_events_by_peak(detected)

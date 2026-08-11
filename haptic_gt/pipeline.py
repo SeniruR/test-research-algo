@@ -6,11 +6,15 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from typing import Any
+
 from haptic_gt.algorithms import freq_shift, haptic_gen, percept, pitch_match
 from haptic_gt.audio_io import INPUT_SR, VIB_SR, extract_audio_from_video, prepare_source_wav
 from haptic_gt.context import detect_events
+from haptic_gt.context.detector import EVENTS_JSON_NAME, GATED_AUDIO_NAME, EventResult
 from haptic_gt.context.frozen_fusion import DetectedEvent
-from haptic_gt.context.mask import events_for_haptic_gate, resolve_gate_categories
+from haptic_gt.context.manual_events import events_from_manual
+from haptic_gt.context.mask import apply_gate, events_for_haptic_gate, resolve_gate_categories
 from haptic_gt.context.taxonomy import load_taxonomy
 from haptic_gt.haptic_synthesis import ContinuousProfile, stitch_algorithm_output
 
@@ -90,6 +94,7 @@ def generate_candidate_tracks(
     gate_categories: list[str] | None = None,
     continuous_haptics: bool = True,
     continuous_profile: ContinuousProfile | None = None,
+    manual_events: list[dict[str, Any]] | dict[str, Any] | str | Path | None = None,
 ) -> CandidateTracks:
     """
     Run context detection (optional) then Sound2Hap A–D.
@@ -101,6 +106,9 @@ def generate_candidate_tracks(
     With `continuous_haptics` on, each algorithm also renders the full clip as a
     low-level continuous layer underneath the event accents, so sustained sounds
     (rumble, rain, engines) keep vibrating instead of leaving silent gaps.
+
+    Pass ``manual_events`` (list of dicts, single event dict, or path to
+    events.json) to skip AST/ViViT and trust hand-labeled start/peak/end times.
     """
     input_path = Path(input_path)
     output_dir = Path(output_dir)
@@ -126,7 +134,42 @@ def generate_candidate_tracks(
     out_c = output_dir / OUTPUT_NAMES["algorithm_c_pitch_matching"]
     out_d = output_dir / OUTPUT_NAMES["algorithm_d_haptic_gen"]
 
-    if enable_context_detection and from_video:
+    if manual_events is not None:
+        events = events_from_manual(manual_events, taxonomy)
+        gate_events = events_for_haptic_gate(events, taxonomy, gate_categories=gate_cats)
+        no_events_detected = len(events) == 0
+        no_haptic_events = len(gate_events) == 0
+        result = EventResult(
+            events=events,
+            no_events_detected=no_events_detected,
+            no_haptic_events=no_haptic_events,
+            timeline_hz=taxonomy.timeline_hz,
+            gate_categories_used=gate_cats,
+        )
+        events_json_path = output_dir / EVENTS_JSON_NAME
+        events_json_path.write_text(
+            json.dumps(result.to_dict(output_dir=output_dir), indent=2),
+            encoding="utf-8",
+        )
+        result.events_json = events_json_path
+        if gate_events:
+            gated = output_dir / GATED_AUDIO_NAME
+            apply_gate(
+                source_wav,
+                gated,
+                events,
+                taxonomy=taxonomy,
+                gate_categories=gate_cats,
+            )
+            haptic_input = gated
+            result.gated_wav = gated
+            result.haptic_outputs["gated_audio"] = str(gated)
+            # Refresh JSON so gated path is recorded
+            events_json_path.write_text(
+                json.dumps(result.to_dict(output_dir=output_dir), indent=2),
+                encoding="utf-8",
+            )
+    elif enable_context_detection and from_video:
         event_result = detect_events(
             input_path,
             source_wav,
