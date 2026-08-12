@@ -17,6 +17,17 @@ from haptic_gt.context.mask import (
 )
 from haptic_gt.context.onset_refine import refine_event_timing
 from haptic_gt.context.proposals import propose_all_windows
+from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+from haptic_gt.context.rumble_filter import filter_sustained_rumble_bursts
+from haptic_gt.context.sed_events import (
+    events_from_frame_posteriors,
+    split_impulsive_by_posterior_peaks,
+)
+from haptic_gt.context.sed_frames import (
+    compute_frame_posteriors,
+    posteriors_to_encoder_scores,
+)
+from haptic_gt.context.sustained_merge import merge_sustained_events
 from haptic_gt.context.taxonomy import load_taxonomy
 from haptic_gt.context.tokenization import tokenize_video_audio
 
@@ -34,6 +45,8 @@ class EventResult:
     gated_wav: Path | None = None
     events_json: Path | None = None
     haptic_outputs: dict[str, str] = field(default_factory=dict)
+    detector_info: dict = field(default_factory=dict)
+    sustained_gate: dict = field(default_factory=dict)
 
     def to_dict(self, *, output_dir: Path | None = None) -> dict:
         taxonomy = load_taxonomy()
@@ -73,6 +86,8 @@ class EventResult:
         }
 
         return {
+            "detector": self.detector_info,
+            "sustained_gate": self.sustained_gate,
             "no_events_detected": self.no_events_detected,
             "no_haptic_events": self.no_haptic_events,
             "gate_categories_used": gate_cats,
@@ -95,10 +110,14 @@ def detect_events(
     full_scan: bool = False,
 ) -> EventResult:
     """
-    Run frozen context detection: propose onsets → classify windows → fuse.
+    Run frozen context detection.
 
-    Phase 1: tokenization → onset proposals → targeted AST/ViViT
-    Phase 2: frozen fusion → events.json → optional gated_audio.wav
+    Default (``sed_enabled``): frame-level SED posteriors → hysteresis decoding →
+    spectral-flux onset refinement → events.json → optional gated_audio.wav.
+
+    Legacy path (``full_scan`` or ``sed_enabled: false``): sparse onset proposals →
+    window tagging → frozen fusion. Kept for comparison; its onsets are only as
+    precise as the 1 s classifier window.
     """
     video_path = Path(video_path)
     source_wav = Path(source_wav)
@@ -107,6 +126,16 @@ def detect_events(
     gate_cats = resolve_gate_categories(taxonomy, gate_categories)
 
     tokens_data = tokenize_video_audio(video_path, source_wav, timeline_hz=taxonomy.timeline_hz)
+
+    if taxonomy.sed_enabled and not full_scan:
+        return _detect_via_frame_sed(
+            tokens_data=tokens_data,
+            source_wav=source_wav,
+            taxonomy=taxonomy,
+            gate_cats=gate_cats,
+            output_dir=output_dir,
+            write_gated=write_gated,
+        )
 
     if full_scan:
         proposal_windows = None
@@ -138,7 +167,45 @@ def detect_events(
     events = refine_event_timing(events, source_wav, taxonomy)
     # Onset snap can collapse late rumble + early muzzle onto the same peak
     events = dedupe_events_by_peak(events)
+    # Cannon in engine bed: AST often says vehicle; flux + explosion score recovers shots
+    events = promote_impulsive_transients(
+        events, source_wav, encoder_scores, taxonomy
+    )
+    events = refine_event_timing(events, source_wav, taxonomy)
+    events = dedupe_events_by_peak(events)
+    # Collapse fragmented vehicle chips into longer rumble spans
+    events = merge_sustained_events(events, taxonomy)
+    # Keep loud rumble islands; do not re-merge (that glues bursts across quiet gaps)
+    gate_report: dict = {}
+    events = filter_sustained_rumble_bursts(
+        events, source_wav, taxonomy, report=gate_report
+    )
+    events = dedupe_events_by_peak(events)
 
+    return _finalize(
+        events,
+        source_wav=source_wav,
+        taxonomy=taxonomy,
+        gate_cats=gate_cats,
+        output_dir=output_dir,
+        write_gated=write_gated,
+        detector_info={"mode": "window_tagging", "use_video": taxonomy.use_video},
+        sustained_gate=gate_report,
+    )
+
+
+def _finalize(
+    events: list[DetectedEvent],
+    *,
+    source_wav: Path,
+    taxonomy,
+    gate_cats: list[str],
+    output_dir: str | Path | None,
+    write_gated: bool,
+    detector_info: dict | None = None,
+    sustained_gate: dict | None = None,
+) -> EventResult:
+    """Build EventResult and write events.json / gated audio."""
     gate_events = events_for_haptic_gate(events, taxonomy, gate_categories=gate_cats)
     result = EventResult(
         events=events,
@@ -146,6 +213,8 @@ def detect_events(
         no_haptic_events=len(gate_events) == 0,
         timeline_hz=taxonomy.timeline_hz,
         gate_categories_used=gate_cats,
+        detector_info=detector_info or {"mode": "window_tagging", "use_video": taxonomy.use_video},
+        sustained_gate=sustained_gate or {},
     )
 
     if output_dir is not None:
@@ -171,3 +240,59 @@ def detect_events(
             result.haptic_outputs["gated_audio"] = str(gated)
 
     return result
+
+
+def _detect_via_frame_sed(
+    *,
+    tokens_data,
+    source_wav: Path,
+    taxonomy,
+    gate_cats: list[str],
+    output_dir: str | Path | None,
+    write_gated: bool,
+) -> EventResult:
+    """
+    Frame-level SED path (default).
+
+    Per-category posteriors on a 100 ms grid (10 ms with PANNs) are decoded with
+    median filtering + hysteresis, so onsets come from the model's time axis
+    instead of one score per 1 s window. Spectral-flux refinement then sharpens
+    impulsive onsets to sample accuracy.
+
+    Video is not fused here on purpose — see ``use_video`` in taxonomy.yaml.
+    """
+    frames = compute_frame_posteriors(tokens_data.audio_16k, taxonomy)
+    encoder_scores = posteriors_to_encoder_scores(frames, taxonomy)
+
+    events = events_from_frame_posteriors(frames, taxonomy)
+    events = split_impulsive_by_posterior_peaks(events, frames, taxonomy)
+    events = refine_event_timing(events, source_wav, taxonomy)
+    events = dedupe_events_by_peak(events)
+    events = promote_impulsive_transients(events, source_wav, encoder_scores, taxonomy)
+    events = refine_event_timing(events, source_wav, taxonomy)
+    events = dedupe_events_by_peak(events)
+    events = merge_sustained_events(events, taxonomy)
+    gate_report: dict = {}
+    events = filter_sustained_rumble_bursts(
+        events, source_wav, taxonomy, report=gate_report
+    )
+    events = dedupe_events_by_peak(events)
+
+    return _finalize(
+        events,
+        source_wav=source_wav,
+        taxonomy=taxonomy,
+        gate_cats=gate_cats,
+        output_dir=output_dir,
+        write_gated=write_gated,
+        sustained_gate=gate_report,
+        detector_info={
+            "mode": "frame_sed",
+            "backend": frames.backend,
+            "frame_hop_sec": round(frames.hop_sec, 4),
+            "window_sec": taxonomy.sed_window_sec,
+            "onset_high": taxonomy.sed_onset_high,
+            "onset_low": taxonomy.sed_onset_low,
+            "use_video": taxonomy.use_video,
+        },
+    )

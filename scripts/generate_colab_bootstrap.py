@@ -43,6 +43,9 @@ CELL_INSTALL = """\
 # Install system + Python dependencies
 !apt-get -qq install -y ffmpeg > /dev/null
 !pip install -q numpy scipy librosa soundfile audioread resampy torch torchaudio matplotlib mosqito pyyaml transformers accelerate decord av opencv-python Pillow
+# Optional: PANNs gives true framewise SED (~10 ms frames). Without it the
+# detector falls back to densely-strided AST (100 ms frames). GPU runtime advised.
+!pip install -q panns-inference
 """
 
 CELL_WORKSPACE = """\
@@ -97,6 +100,11 @@ MANUAL_EVENTS = None
 #     "end_sec": 3.66,
 # }
 
+# Replace auto vehicle with your rumble marks (keeps auto gunshot/explosion).
+# Calib: true rumbles often rise ~1.11–1.23 while bed FPs rise ~1.38+ — not separable by RMS.
+MANUAL_RUMBLE_PEAKS = None
+# MANUAL_RUMBLE_PEAKS = [6.0, 24.0, 29.0, 30.0, 31.0, 31.9, 41.0, 42.0, 43.0, 45.0, 48.0, 49.0, 51.0]
+
 source_wav = OUTPUT_DIR / OUTPUT_NAMES["source_audio"]
 if source_wav.exists() and not ENABLE_CONTEXT and MANUAL_EVENTS is None:
   print("Reusing existing source audio:", source_wav)
@@ -114,6 +122,7 @@ tracks = generate_candidate_tracks(
     enable_context_detection=ENABLE_CONTEXT,
     gate_categories=GATE_CATEGORIES,
     manual_events=MANUAL_EVENTS,
+    manual_rumble_peaks=MANUAL_RUMBLE_PEAKS,
 )
 saved = tracks.save_all()
 
@@ -186,6 +195,272 @@ if events_path.exists():
         print("No events in events.json.")
 else:
     print("Run the generation cell first to create events.json")
+"""
+
+CELL_RUMBLE_CALIB = """\
+# Calibrate vehicle rumble against YOUR marked peaks (span coverage + local RMS).
+# Scoring only: fill TRUTH_RUMBLE_TIMES, run after generation. Auto gates on loudness.
+from pathlib import Path
+import json
+import soundfile as sf
+from haptic_gt.context.rumble_calib import calibrate_rumble_thresholds, format_calibration_table
+from haptic_gt.pipeline import OUTPUT_NAMES
+
+if "OUTPUT_DIR" not in globals():
+    OUTPUT_DIR = Path("/content/haptic-workspace/output")
+
+# Rumble times you hear in THIS clip (seconds). Empty by default on purpose:
+# marks left over from another clip score this one against the wrong video and
+# every number in the report comes out zero.
+# GRADING KEY ONLY -- this does not steer detection. The detector already ran,
+# unaided, in the generate cell; these marks just say where you expected it to
+# fire so the report can count hits and misses. (The HITL override that *does*
+# change detection is MANUAL_RUMBLE_PEAKS in the generate cell, left at None.)
+TRUTH_RUMBLE_TIMES = []
+
+source = OUTPUT_DIR / OUTPUT_NAMES["source_audio"]
+events_path = OUTPUT_DIR / OUTPUT_NAMES["events_json"]
+if not source.exists() or not events_path.exists():
+    raise FileNotFoundError("Run the generation cell first (need source_audio.wav + events.json).")
+
+report = calibrate_rumble_thresholds(
+    source,
+    TRUTH_RUMBLE_TIMES,
+    events_path,
+    match_tolerance_sec=1.0,
+)
+print(format_calibration_table(report))
+print(
+    "\\nAuto rumble windows are loud RMS islands (not AST start/end slabs). "
+    "A 29–32s island hits every mark inside it; quiet gaps should stay unmarked. "
+    "These marks grade the run; they never feed the detector."
+)
+(OUTPUT_DIR / "rumble_calibration.json").write_text(
+    json.dumps(report, indent=2), encoding="utf-8"
+)
+print("Wrote", OUTPUT_DIR / "rumble_calibration.json")
+
+# Dense 100 ms scan. The whole clip by default: a fixed window belongs to
+# whichever video it was typed for, and on the next clip it scans a second of
+# nothing. Narrow it only to zoom in on a stretch you are arguing about.
+from haptic_gt.context.rumble_calib import scan_rumble_timeline, format_timeline_scan
+import matplotlib.pyplot as plt
+
+_dur = float(sf.info(str(source)).duration)
+SCAN_START = 0.0
+SCAN_END = _dur
+SCAN_HOP = 0.1  # 100 ms. Set 0.01 for 10 ms (more rows).
+
+SCAN_START = max(0.0, min(SCAN_START, _dur))
+SCAN_END = min(SCAN_END, _dur)
+
+scan = scan_rumble_timeline(
+    source,
+    start_sec=SCAN_START,
+    end_sec=SCAN_END,
+    hop_sec=SCAN_HOP,
+    events_json=events_path,
+    manual_peaks_sec=TRUTH_RUMBLE_TIMES,
+)
+print(format_timeline_scan(scan, only_manual_windows=bool(TRUTH_RUMBLE_TIMES)))
+print("\\n(Full scan saved; the table shows ticks near your marks when you set any.)")
+SCAN_NAME = "rumble_scan.json"
+(OUTPUT_DIR / SCAN_NAME).write_text(json.dumps(scan, indent=2), encoding="utf-8")
+
+ts = [s["t_sec"] for s in scan["samples"]]
+rises = [s["rms_rise_ratio"] or 0.0 for s in scan["samples"]]
+rmss = [s["local_rms"] for s in scan["samples"]]
+thr = scan["summary"].get("salience_threshold")
+fig, ax = plt.subplots(2, 1, figsize=(12, 5), sharex=True)
+ax[0].plot(ts, rises, lw=1)
+ax[0].axhline(1.10, color="gray", ls="--", lw=0.8, label="1.10")
+ax[0].axhline(1.25, color="orange", ls="--", lw=0.8, label="1.25")
+ax[0].axhline(1.35, color="red", ls="--", lw=0.8, label="1.35")
+for m in TRUTH_RUMBLE_TIMES:
+    if SCAN_START <= m <= SCAN_END:
+        ax[0].axvline(m, color="green", alpha=0.4, lw=1)
+ax[0].set_ylabel("RMS rise (unused)")
+ax[0].legend(loc="upper right", fontsize=8)
+ax[0].set_title(f"Rumble scan {SCAN_START:.1f}–{SCAN_END:.1f}s @ {SCAN_HOP}s")
+ax[1].plot(ts, rmss, lw=1, color="tab:blue")
+if thr is not None:
+    ax[1].axhline(thr, color="purple", ls="--", lw=1, label=f"salience {thr:.3f}")
+for m in TRUTH_RUMBLE_TIMES:
+    if SCAN_START <= m <= SCAN_END:
+        ax[1].axvline(m, color="green", alpha=0.4, lw=1)
+ax[1].set_ylabel("local RMS (auto gate)")
+ax[1].set_xlabel("Time (s)")
+ax[1].legend(loc="upper right", fontsize=8)
+plt.tight_layout()
+plt.show()
+print("Wrote", OUTPUT_DIR / SCAN_NAME)
+
+# What the loudness gate decided, so a missing rumble is diagnosable: one floor
+# per scene, plus every span it dropped and how far under the floor it was.
+gate = json.loads(events_path.read_text(encoding="utf-8")).get("sustained_gate") or {}
+if gate:
+    print("\\nrumble gate")
+    print("  clip floor {0:.4f}  proposals {1}  kept {2}".format(
+        gate.get("clip_threshold", 0.0), gate.get("proposals", 0), gate.get("kept", 0)
+    ))
+    for sc in gate.get("scenes", []):
+        print("  scene {0:6.2f}-{1:6.2f}s  floor {2:.4f}".format(
+            sc["start_sec"], sc["end_sec"], sc["threshold"]
+        ))
+    for d in gate.get("dropped", []):
+        print("  dropped {0:.2f}-{1:.2f}s  local RMS {2:.4f} vs floor {3:.4f}  ({4})".format(
+            d["start_sec"], d["end_sec"], d["local_rms"], d["scene_threshold"], d["reason"]
+        ))
+    if not gate.get("dropped"):
+        print("  nothing dropped: rumble you cannot feel was never proposed, not gated out")
+"""
+
+CELL_SHOT_CALIB = """\
+# Calibrate cannon / gunshot timing against YOUR marked shot times.
+# Shows, for each mark, the nearest real attack in the audio and how strong it is
+# relative to this clip's confident blasts. Use it to tell a detector error from
+# a mis-typed mark.
+from pathlib import Path
+import json
+import matplotlib.pyplot as plt
+from haptic_gt.context.shot_calib import (
+    calibrate_shot_times,
+    format_shot_calibration_table,
+    format_shot_scan,
+    scan_shot_attacks,
+)
+from haptic_gt.pipeline import OUTPUT_NAMES
+
+if "OUTPUT_DIR" not in globals():
+    OUTPUT_DIR = Path("/content/haptic-workspace/output")
+
+# Shot times you hear in THIS clip (seconds). Empty by default: another clip's
+# times score this one against the wrong video, and the whole report reads as a
+# detector failure when the marks are simply not from this edit.
+# GRADING KEY ONLY: detection already happened, unaided, in the generate cell.
+TRUTH_SHOT_TIMES = []
+
+source = OUTPUT_DIR / OUTPUT_NAMES["source_audio"]
+events_path = OUTPUT_DIR / OUTPUT_NAMES["events_json"]
+if not source.exists() or not events_path.exists():
+    raise FileNotFoundError("Run the generation cell first (need source_audio.wav + events.json).")
+
+report = calibrate_shot_times(
+    source,
+    TRUTH_SHOT_TIMES,
+    events_path,
+    match_tolerance_sec=0.35,
+)
+print(format_shot_calibration_table(report))
+(OUTPUT_DIR / "shot_calibration.json").write_text(
+    json.dumps(report, indent=2), encoding="utf-8"
+)
+
+# Every strong attack in the clip, whether or not it became an event.
+scan = scan_shot_attacks(source, top_n=40)
+print()
+print(format_shot_scan(scan))
+(OUTPUT_DIR / "shot_scan.json").write_text(json.dumps(scan, indent=2), encoding="utf-8")
+
+ts = [a["t_sec"] for a in scan["attacks"]]
+vals = [a["flux_rel_max"] for a in scan["attacks"]]
+fig, ax = plt.subplots(figsize=(12, 3))
+ax.stem(ts, vals, basefmt=" ")
+for m in TRUTH_SHOT_TIMES:
+    ax.axvline(m, color="green", alpha=0.45, lw=1)
+for e in json.loads(events_path.read_text(encoding="utf-8"))["events"]:
+    if e["category"] in ("explosion", "gunshot"):
+        ax.axvline(e["peak_sec"], color="red", ls="--", alpha=0.6, lw=1)
+ax.set_xlabel("Time (s)")
+ax.set_ylabel("attack / clip max")
+ax.set_title("Flux attacks — green = your marks, red dashed = detected shots")
+plt.tight_layout()
+plt.show()
+print("Wrote", OUTPUT_DIR / "shot_calibration.json", "and", OUTPUT_DIR / "shot_scan.json")
+"""
+
+CELL_SED_EVAL = """\
+# DCASE-style scoring of events.json against your ground truth.
+# Event-based F1 uses a one-to-one onset match inside a collar (DCASE Task 4 uses
+# 200 ms); segment-based F1 ignores onset jitter and asks "did we find it at all".
+from pathlib import Path
+import json
+from haptic_gt.context.taxonomy import load_taxonomy
+from haptic_gt.eval.sed_metrics import evaluate_events, format_evaluation
+from haptic_gt.pipeline import OUTPUT_NAMES
+import soundfile as sf
+
+if "OUTPUT_DIR" not in globals():
+    OUTPUT_DIR = Path("/content/haptic-workspace/output")
+
+# Ground truth comes from the marks you entered in the calibration cells above,
+# so one clip cannot be scored against another clip's marks. Run those first, or
+# set GROUND_TRUTH here by hand.
+GROUND_TRUTH = {
+    "explosion": list(globals().get("TRUTH_SHOT_TIMES") or []),
+    "vehicle": list(globals().get("TRUTH_RUMBLE_TIMES") or []),
+}
+GROUND_TRUTH = {k: v for k, v in GROUND_TRUTH.items() if v}
+
+source = OUTPUT_DIR / OUTPUT_NAMES["source_audio"]
+events_path = OUTPUT_DIR / OUTPUT_NAMES["events_json"]
+if not source.exists() or not events_path.exists():
+    raise FileNotFoundError("Run the generation cell first.")
+
+info = sf.info(str(source))
+duration = float(info.duration)
+events = json.loads(events_path.read_text(encoding="utf-8"))
+print("detector:", events.get("detector", {}))
+print("clip duration: {0:.2f}s".format(duration))
+print("ground truth:", {k: len(v) for k, v in GROUND_TRUTH.items()})
+
+detected_cats = {e["category"] for e in events.get("events", [])}
+for cat, marks in GROUND_TRUTH.items():
+    if any(m > duration for m in marks):
+        print(
+            "WARNING: {0} marks fall past the end of this clip -- these look like "
+            "another video's marks, scores will be meaningless.".format(cat)
+        )
+    if cat not in detected_cats:
+        print(
+            "WARNING: {0} marks exist but nothing of that category was detected. "
+            "If this clip has no {0}, clear those marks -- otherwise every one "
+            "counts as a miss and drags F1 to 0.".format(cat)
+        )
+
+if not GROUND_TRUTH:
+    print(
+        "Nothing to score yet. Put what YOU hear in this clip into "
+        "TRUTH_SHOT_TIMES / TRUTH_RUMBLE_TIMES in the calibration cells above and "
+        "re-run them, then run this cell. Detection does not need them; scoring "
+        "does. Detected so far:"
+    )
+    for e in events.get("events", []):
+        print("  {0:14} {1:7.2f}-{2:7.2f}s  peak {3:7.2f}s".format(
+            e["category"], e["start_sec"], e["end_sec"], e["peak_sec"]
+        ))
+else:
+    # Rumble marks are moments inside a burst, not onsets, so they get coverage
+    # (recall + how much of the clip vibrates) instead of an onset-collar F1.
+    sustained = tuple(
+        name for name, cfg in load_taxonomy().categories.items() if not cfg.impulsive
+    )
+    report = evaluate_events(
+        GROUND_TRUTH,
+        events,
+        duration_sec=duration,
+        collars_sec=(0.2, 0.5),
+        segment_sec=1.0,
+        sustained_categories=sustained,
+    )
+    print()
+    print(format_evaluation(report))
+    (OUTPUT_DIR / "sed_evaluation.json").write_text(
+        json.dumps(report, indent=2), encoding="utf-8"
+    )
+    print()
+    print("0.2 s is the DCASE onset collar. Hand marks drift ~0.5 s, so read both.")
+    print("Wrote", OUTPUT_DIR / "sed_evaluation.json")
 """
 
 CELL_PLAYBACK = """\
@@ -336,6 +611,9 @@ def main() -> None:
         make_code_cell(CELL_UPLOAD, "9c15aaa0"),
         make_code_cell(CELL_GENERATE, "f6c03115"),
         make_code_cell(CELL_EVENTS_VIZ, "45404a15"),
+        make_code_cell(CELL_RUMBLE_CALIB, "b7e2c901"),
+        make_code_cell(CELL_SHOT_CALIB, "c31d8a45"),
+        make_code_cell(CELL_SED_EVAL, "d47b91e0"),
         make_code_cell(CELL_PLAYBACK, "e8083503"),
         make_code_cell(CELL_DOWNLOAD, "f9703b79"),
         make_markdown_cell(MARKDOWN_HITL, "d0fce921"),

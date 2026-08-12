@@ -60,15 +60,16 @@ def _merge_tokens(
             continue
 
         sorted_items = sorted(group, key=lambda x: x.time_sec)
+        merge_gap = taxonomy.sustained_merge_gap_sec
         clusters: list[list[SymbolicToken]] = [[sorted_items[0]]]
         for tok in sorted_items[1:]:
-            if tok.time_sec - clusters[-1][-1].time_sec <= 0.75:
+            if tok.time_sec - clusters[-1][-1].time_sec <= merge_gap:
                 clusters[-1].append(tok)
             else:
                 clusters.append([tok])
         for cluster in clusters:
             peak_tok = max(cluster, key=lambda x: x.confidence)
-            half_win = 0.25
+            half_win = 0.35
             primitives.append(
                 EventPrimitive(
                     category=cat_name if cat_name != "unknown" else None,
@@ -199,12 +200,13 @@ def _merge_encoder_scores(
     scores: list[EncoderScore],
     taxonomy: Taxonomy,
     *,
-    gap_sec: float = 1.0,
+    gap_sec: float | None = None,
 ) -> list[EventPrimitive]:
     """Aggregate encoder scores by taxonomy category."""
     if not scores:
         return []
 
+    gap = gap_sec if gap_sec is not None else taxonomy.sustained_merge_gap_sec
     by_category: dict[str, list[EncoderScore]] = {}
     for s in scores:
         cat = match_label_to_category(taxonomy, s.label, s.source)
@@ -231,7 +233,7 @@ def _merge_encoder_scores(
             continue
         clusters: list[list[EncoderScore]] = [[group[0]]]
         for item in group[1:]:
-            if item.time_sec - clusters[-1][-1].time_sec <= gap_sec:
+            if item.time_sec - clusters[-1][-1].time_sec <= gap:
                 clusters[-1].append(item)
             else:
                 clusters.append([item])
@@ -244,9 +246,9 @@ def _merge_encoder_scores(
                 EventPrimitive(
                     category=cat_name,
                     label=peak.label,
-                    start_sec=max(0.0, cluster[0].time_sec - 0.5),
+                    start_sec=max(0.0, cluster[0].time_sec - 0.25),
                     peak_sec=peak.time_sec,
-                    end_sec=cluster[-1].time_sec + 0.5,
+                    end_sec=cluster[-1].time_sec + 0.25,
                     confidence=peak.score,
                     sources=sources,
                     context_token=False,

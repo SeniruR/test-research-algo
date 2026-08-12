@@ -175,7 +175,7 @@ def propose_onsets(
     if flux.size > 0:
         flux_peak = float(np.max(flux))
         if flux_peak >= 1e-12:
-            flux_thr = flux_peak * taxonomy.onset_flux_min_ratio
+            flux_thr = flux_peak * taxonomy.onset_flux_proposal_ratio
             flux_hop_sec = taxonomy.onset_flux_hop_ms / 1000.0
             flux_min_dist = max(1, int(round(min_dist_sec / flux_hop_sec)))
             flux_idxs = _local_peak_indices(

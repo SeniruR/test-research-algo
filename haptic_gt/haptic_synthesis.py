@@ -13,6 +13,52 @@ from scipy.ndimage import maximum_filter1d
 
 from haptic_gt.audio_io import INPUT_SR, VIB_SR
 from haptic_gt.context.frozen_fusion import DetectedEvent
+from haptic_gt.context.mask import build_event_mask
+from haptic_gt.context.sustained_merge import sustained_coverage_sec
+from haptic_gt.context.taxonomy import Taxonomy, load_taxonomy
+
+
+def _impulsive_accent_events(
+    events: list[DetectedEvent],
+    taxonomy: Taxonomy,
+) -> list[DetectedEvent]:
+    """Only impulsive categories get bang-style accents (gunshot/explosion/thunder)."""
+    out: list[DetectedEvent] = []
+    for ev in events:
+        cat = taxonomy.categories.get(ev.category)
+        if cat is not None and cat.impulsive:
+            out.append(ev)
+    return out
+
+
+def _sustained_events(
+    events: list[DetectedEvent],
+    taxonomy: Taxonomy,
+) -> list[DetectedEvent]:
+    out: list[DetectedEvent] = []
+    for ev in events:
+        cat = taxonomy.categories.get(ev.category)
+        if cat is not None and not cat.impulsive:
+            out.append(ev)
+    return out
+
+
+def _use_sustained_bed_mask(
+    sustained: list[DetectedEvent],
+    duration_sec: float,
+    taxonomy: Taxonomy,
+) -> bool:
+    """True for intermittent rumble clips; false for a single short vehicle chip."""
+    if not sustained or duration_sec <= 0:
+        return False
+    n = len(sustained)
+    if n >= taxonomy.sustained_mask_min_events:
+        return True
+    # One sparse detection (e.g. short tank idle chip) keeps the full bed
+    if n < 2:
+        return False
+    coverage = sustained_coverage_sec(sustained, taxonomy) / duration_sec
+    return coverage >= taxonomy.sustained_mask_min_coverage
 
 
 @dataclass(frozen=True)
@@ -53,7 +99,10 @@ class ContinuousProfile:
     # -- Output dynamics -----------------------------------------------------
     #: Exponent re-imposing macro dynamics on the levelled output, so louder
     #: passages still feel stronger. 1.0 restores the source's full range.
-    dynamics_strength: float = 0.30
+    #: A rumble is one long span whose bursts and lulls are all the haptic has to
+    #: convey its rhythm with, so this has to stay well clear of a flat bed: at
+    #: 0.30 a burst measured 2.9x its gap came out 0.98x, i.e. no rhythm at all.
+    dynamics_strength: float = 0.65
     #: Fraction of the quietest frames muted, so real silence stays silent.
     #: The reference map leaves 29% of its windows empty.
     silence_pct: float = 0.28
@@ -69,6 +118,24 @@ class ContinuousProfile:
     duck_ramp_ms: float = 30.0
     #: Peak amplitude each event segment is normalized to.
     event_gain: float = 0.92
+    #: Accents are placed this far ahead of the audio attack. Event peaks land
+    #: within ~10 ms of the attack and the rendered accent within ~10 ms of the
+    #: event peak, yet the vibration still feels late: a low-frequency actuator
+    #: needs a few cycles to be felt, so a haptic aligned to the sample is felt
+    #: after the sound. Leading it by a fraction of that rise time lines the two
+    #: up perceptually.
+    accent_lead_ms: float = 25.0
+    #: Release applied where one accent would still be ringing under the next, so
+    #: a volley reads as separate hits instead of one long buzz.
+    accent_release_ms: float = 45.0
+    #: Peak amplitude the loudest sustained rumble span is normalized to.
+    sustained_soft_gain: float = 0.48
+    #: Quieter rumble spans are scaled by their own loudness relative to the
+    #: loudest one, so a distant drive does not hit as hard as a car alongside.
+    #: 1.0 would be literal; some compression keeps the quiet scene perceptible.
+    sustained_level_exp: float = 0.6
+    #: Floor on that scaling, so the quietest rumble is still felt.
+    sustained_level_floor: float = 0.35
 
 
 def _read_mono(path: Path) -> tuple[np.ndarray, int]:
@@ -140,6 +207,58 @@ def _normalize_segment(segment: np.ndarray, *, target: float = 0.85) -> np.ndarr
     if peak < 1e-10:
         return segment
     return segment * (target / peak)
+
+
+def _scale_by_energy(
+    segment: np.ndarray,
+    *,
+    target: float,
+    crest: float = 0.707,
+    ceiling: float = 0.95,
+) -> np.ndarray:
+    """Level a rumble span by its energy instead of its loudest spike.
+
+    Peak normalizing a span makes one holding a sharp transient come out quiet
+    and a smooth one come out loud, which puts the power on the wrong span: a
+    distant drive rendered as a steady tone then feels stronger than a car
+    alongside whose burst has an attack in it. ``crest`` is the peak/RMS ratio of
+    a sine, so a smooth rumble still lands on ``target``; spikier material is
+    only pulled back if it would run out of headroom.
+    """
+    rms = float(np.sqrt(np.mean(np.square(segment))))
+    peak = float(np.max(np.abs(segment)))
+    if rms < 1e-10 or peak < 1e-10:
+        return segment
+    scale = crest * target / rms
+    if peak * scale > ceiling:
+        scale = ceiling / peak
+    return segment * scale
+
+
+def _release_tail(segment: np.ndarray, keep: int, release: int) -> np.ndarray:
+    """Cut a segment to ``keep`` samples with a cosine release, not a click."""
+    if keep <= 0 or segment.size <= keep:
+        return segment
+    out = segment[:keep].copy()
+    r = min(release, keep)
+    if r > 1:
+        out[-r:] *= ((1.0 + np.cos(np.linspace(0.0, np.pi, r))) / 2.0).astype(out.dtype)
+    return out
+
+
+def _source_levels(
+    audio: np.ndarray,
+    sample_rate: int,
+    events: list[DetectedEvent],
+) -> list[float]:
+    """RMS of the source under each event span."""
+    levels: list[float] = []
+    for ev in events:
+        s0 = max(0, int(ev.start_sec * sample_rate))
+        s1 = min(len(audio), int(ev.end_sec * sample_rate))
+        seg = audio[s0:s1]
+        levels.append(float(np.sqrt(np.mean(np.square(seg)))) if seg.size else 0.0)
+    return levels
 
 
 def _frame_envelope(
@@ -287,6 +406,7 @@ def _render_continuous_layer(
     total_samples: int,
     process_kwargs: dict,
     profile: ContinuousProfile,
+    dynamics: np.ndarray,
 ) -> np.ndarray:
     """Render the whole clip through an algorithm as a low-level bed."""
     levelled = _level_audio(source_audio, source_sr, profile)
@@ -303,8 +423,7 @@ def _render_continuous_layer(
         base = np.pad(base, (0, total_samples - base.size))
     base = base[:total_samples]
 
-    curve, centers = _dynamics_curve(source_audio, source_sr, profile)
-    base = base * _resample_curve(curve, centers, total_samples, output_sr)
+    base = base * dynamics
 
     envelope, _ = _frame_envelope(base, output_sr, 20.0)
     active = envelope[envelope > 1e-6]
@@ -326,19 +445,24 @@ def stitch_algorithm_output(
     output_sr: int = VIB_SR,
     process_kwargs: dict | None = None,
     continuous: ContinuousProfile | None = None,
+    taxonomy: Taxonomy | None = None,
 ) -> None:
     """
     Run an algorithm over the whole clip and mix per-event accents on top.
 
     Two layers are produced. The continuous layer renders the entire source
-    audio so sustained and undetected content still produces motion, matching
-    the density of the rule-based reference map. The event layer re-renders each
-    detected event, normalizes it independently so weak events stay felt, and
-    aligns its haptic attack to `peak_sec`. The continuous layer is ducked
-    underneath each event so accents keep their full dynamic range.
+    audio so sustained content still produces motion. Impulsive events
+    (gunshot / explosion / thunder) add stronger accents aligned to
+    ``peak_sec``, with the bed ducked underneath.
+
+    Sustained categories (e.g. vehicle):
+    - Sparse / short detection → full continuous bed (steady rumble clips).
+    - Many / high-coverage spans → bed masked to those spans + soft
+      time-aligned rumble segments (intermittent car rumble), no bang duck.
     """
     process_kwargs = process_kwargs or {}
     profile = continuous or ContinuousProfile()
+    taxonomy = taxonomy or load_taxonomy()
 
     audio, sr = _read_mono(source_wav)
     if sr != input_sr:
@@ -351,15 +475,33 @@ def stitch_algorithm_output(
     total_samples = max(1, int(round(duration_sec * output_sr)))
     timeline = np.zeros(total_samples, dtype=np.float32)
 
-    if not events and not profile.enabled:
+    sustained = _sustained_events(events, taxonomy)
+    intermittent = profile.enabled and _use_sustained_bed_mask(
+        sustained, duration_sec, taxonomy
+    )
+
+    # With continuous bed on: bang accents only for impulsive hits.
+    # With continuous off: keep legacy behaviour (accent every gated event).
+    if profile.enabled:
+        accent_events = _impulsive_accent_events(events, taxonomy)
+    else:
+        accent_events = list(events)
+
+    if not accent_events and not profile.enabled and not intermittent:
         _write_wav(output_path, timeline, output_sr)
         return
 
+    # One dynamics curve for the whole clip, shared by the bed and the rumble
+    # segments so both rise and fall with what is audible.
+    dyn_values, dyn_centers = _dynamics_curve(audio, sr, profile)
+    dynamics = _resample_curve(dyn_values, dyn_centers, total_samples, output_sr)
+
+    soft_placements: list[tuple[int, np.ndarray]] = []
+    placements: list[tuple[int, np.ndarray]] = []
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
 
-        placements: list[tuple[int, np.ndarray]] = []
-        for i, ev in enumerate(events):
+        for i, ev in enumerate(accent_events):
             clip_start, clip_end = _event_clip_bounds(ev, duration_sec)
             clip_in = tmp_path / f"event_{i}_in.wav"
             clip_out = tmp_path / f"event_{i}_out.wav"
@@ -371,18 +513,73 @@ def stitch_algorithm_output(
                 output_sr=output_sr,
                 process_kwargs=process_kwargs,
             )
-            # Normalize each event independently so every event is felt,
-            # regardless of its raw amplitude relative to the loudest event.
             segment = _normalize_segment(segment, target=profile.event_gain)
 
             onset_sec = _haptic_onset_sec(segment, output_sr)
-            start_idx = int(round((ev.peak_sec - onset_sec) * output_sr))
+            lead_sec = profile.accent_lead_ms / 1000.0
+            start_idx = int(round((ev.peak_sec - onset_sec - lead_sec) * output_sr))
             if start_idx < 0:
                 segment = segment[-start_idx:]
                 start_idx = 0
             if start_idx >= total_samples or segment.size == 0:
                 continue
             placements.append((start_idx, segment))
+
+        # A bang still ringing when the next one lands buries its attack, which
+        # reads as the next hit arriving late rather than as one loud volley.
+        placements.sort(key=lambda p: p[0])
+        release = max(1, int(output_sr * profile.accent_release_ms / 1000.0))
+        for i in range(len(placements) - 1):
+            start, segment = placements[i]
+            keep = placements[i + 1][0] - start
+            if 0 < keep < segment.size:
+                placements[i] = (start, _release_tail(segment, keep, release))
+
+        if intermittent:
+            levels = _source_levels(audio, sr, sustained)
+            loudest = max(levels) if levels else 0.0
+            for i, ev in enumerate(sustained):
+                span = max(0.05, ev.end_sec - ev.start_sec)
+                clip_in = tmp_path / f"sustained_{i}_in.wav"
+                clip_out = tmp_path / f"sustained_{i}_out.wav"
+                _extract_clip_wav(
+                    source_wav, ev.start_sec, ev.end_sec, clip_in, sample_rate=sr
+                )
+                segment = _run_algorithm(
+                    process_file,
+                    clip_in,
+                    clip_out,
+                    output_sr=output_sr,
+                    process_kwargs=process_kwargs,
+                )
+                # Normalizing every span to the same peak makes a distant drive hit
+                # as hard as a car alongside, which is the rumble's power gone.
+                relative = 1.0
+                if loudest > 1e-9:
+                    relative = (levels[i] / loudest) ** profile.sustained_level_exp
+                relative = float(np.clip(relative, profile.sustained_level_floor, 1.0))
+                segment = _scale_by_energy(
+                    segment, target=profile.sustained_soft_gain * relative
+                )
+                target_len = max(1, int(round(span * output_sr)))
+                if segment.size < target_len:
+                    segment = np.pad(segment, (0, target_len - segment.size))
+                elif segment.size > target_len:
+                    segment = segment[:target_len]
+                start_idx = max(0, int(round(ev.start_sec * output_sr)))
+                if start_idx >= total_samples or segment.size == 0:
+                    continue
+                # A rumble span is minutes of one event; its bursts and lulls are
+                # all the rhythm the haptic has. Algorithm A normalizes every frame
+                # to a constant level internally, so without this the whole span
+                # comes out as one flat buzz.
+                shape = dynamics[start_idx : start_idx + segment.size]
+                if shape.size < segment.size:
+                    shape = np.pad(shape, (0, segment.size - shape.size), mode="edge")
+                peak = float(np.max(shape)) if shape.size else 0.0
+                if peak > 1e-6:
+                    segment = segment * (shape / peak)
+                soft_placements.append((start_idx, segment))
 
         if profile.enabled:
             base = _render_continuous_layer(
@@ -394,7 +591,14 @@ def stitch_algorithm_output(
                 total_samples=total_samples,
                 process_kwargs=process_kwargs,
                 profile=profile,
+                dynamics=dynamics,
             )
+            if intermittent:
+                # Rumble on only where sustained events fired; quiet gaps stay quiet
+                mask = build_event_mask(
+                    total_samples, output_sr, sustained, fade_ms=40.0
+                )
+                base *= mask
             spans = [(start, start + len(seg)) for start, seg in placements]
             base *= _duck_envelope(
                 total_samples,
@@ -405,12 +609,17 @@ def stitch_algorithm_output(
             )
             timeline += base
 
+    for start_idx, segment in soft_placements:
+        end_idx = min(total_samples, start_idx + len(segment))
+        seg_len = end_idx - start_idx
+        if seg_len > 0:
+            timeline[start_idx:end_idx] += segment[:seg_len]
+
     for start_idx, segment in placements:
         end_idx = min(total_samples, start_idx + len(segment))
         seg_len = end_idx - start_idx
         if seg_len > 0:
             timeline[start_idx:end_idx] += segment[:seg_len]
 
-    # Clamp overlapping events without destroying individual event amplitudes
     np.clip(timeline, -1.0, 1.0, out=timeline)
     _write_wav(output_path, timeline, output_sr)

@@ -80,3 +80,39 @@ def events_from_manual(
 
     events.sort(key=lambda e: e.start_sec)
     return events
+
+
+def vehicle_events_from_peaks(
+    peaks_sec: list[float],
+    *,
+    half_width_sec: float = 0.45,
+    taxonomy: Taxonomy | None = None,
+) -> list[DetectedEvent]:
+    """
+    Build vehicle rumble events from hand-marked peak times (HITL GT).
+
+    Use when auto vehicle detection cannot match ears — calib showed many true
+    rumbles have almost no RMS rise, while bed false-positives often do.
+    """
+    taxonomy = taxonomy or load_taxonomy()
+    if "vehicle" not in taxonomy.categories:
+        raise ValueError("taxonomy has no vehicle category")
+    events: list[DetectedEvent] = []
+    for peak in sorted(float(p) for p in peaks_sec):
+        start = max(0.0, peak - half_width_sec * 0.35)
+        end = peak + half_width_sec
+        events.append(
+            DetectedEvent(
+                category="vehicle",
+                label="vehicle_rumble",
+                start_sec=start,
+                peak_sec=peak,
+                end_sec=end,
+                confidence=1.0,
+                context_token=False,
+                audio_score=None,
+                video_score=None,
+                sources=["manual"],
+            )
+        )
+    return events

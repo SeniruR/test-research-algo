@@ -13,10 +13,29 @@ from haptic_gt.audio_io import INPUT_SR, VIB_SR, extract_audio_from_video, prepa
 from haptic_gt.context import detect_events
 from haptic_gt.context.detector import EVENTS_JSON_NAME, GATED_AUDIO_NAME, EventResult
 from haptic_gt.context.frozen_fusion import DetectedEvent
-from haptic_gt.context.manual_events import events_from_manual
+from haptic_gt.context.manual_events import events_from_manual, vehicle_events_from_peaks
 from haptic_gt.context.mask import apply_gate, events_for_haptic_gate, resolve_gate_categories
 from haptic_gt.context.taxonomy import load_taxonomy
 from haptic_gt.haptic_synthesis import ContinuousProfile, stitch_algorithm_output
+
+
+def _replace_vehicle_with_manual_peaks(
+    events: list[DetectedEvent],
+    peaks_sec: list[float],
+    taxonomy,
+) -> list[DetectedEvent]:
+    """Keep impulsive auto events; replace vehicle spans with hand-marked rumble peaks."""
+    kept = []
+    for ev in events:
+        cat = taxonomy.categories.get(ev.category)
+        if cat is not None and not cat.impulsive and ev.category == "vehicle":
+            continue
+        if ev.category == "vehicle":
+            continue
+        kept.append(ev)
+    kept.extend(vehicle_events_from_peaks(peaks_sec, taxonomy=taxonomy))
+    kept.sort(key=lambda e: e.start_sec)
+    return kept
 
 OUTPUT_NAMES = {
     "source_audio": "source_audio.wav",
@@ -95,6 +114,7 @@ def generate_candidate_tracks(
     continuous_haptics: bool = True,
     continuous_profile: ContinuousProfile | None = None,
     manual_events: list[dict[str, Any]] | dict[str, Any] | str | Path | None = None,
+    manual_rumble_peaks: list[float] | None = None,
 ) -> CandidateTracks:
     """
     Run context detection (optional) then Sound2Hap A–D.
@@ -109,6 +129,10 @@ def generate_candidate_tracks(
 
     Pass ``manual_events`` (list of dicts, single event dict, or path to
     events.json) to skip AST/ViViT and trust hand-labeled start/peak/end times.
+
+    Pass ``manual_rumble_peaks`` to replace auto ``vehicle`` events with your
+    marked rumble times (keeps auto gunshot/explosion). Use when calib shows
+    RMS rise cannot separate true rumbles from engine-bed false positives.
     """
     input_path = Path(input_path)
     output_dir = Path(output_dir)
@@ -180,11 +204,44 @@ def generate_candidate_tracks(
         )
         events = event_result.events
         events_json_path = event_result.events_json
-        no_events_detected = event_result.no_events_detected
-        no_haptic_events = event_result.no_haptic_events
-        gate_events = events_for_haptic_gate(events or [], taxonomy, gate_categories=gate_cats)
-        if event_result.gated_wav is not None and event_result.gated_wav.exists():
-            haptic_input = event_result.gated_wav
+        if manual_rumble_peaks:
+            events = _replace_vehicle_with_manual_peaks(
+                events or [], manual_rumble_peaks, taxonomy
+            )
+            # Rewrite events.json + gated audio with replaced vehicle spans
+            gate_events = events_for_haptic_gate(events, taxonomy, gate_categories=gate_cats)
+            result = EventResult(
+                events=events,
+                no_events_detected=len(events) == 0,
+                no_haptic_events=len(gate_events) == 0,
+                timeline_hz=taxonomy.timeline_hz,
+                gate_categories_used=gate_cats,
+            )
+            events_json_path = output_dir / EVENTS_JSON_NAME
+            events_json_path.write_text(
+                json.dumps(result.to_dict(output_dir=output_dir), indent=2),
+                encoding="utf-8",
+            )
+            if gate_events:
+                gated = output_dir / GATED_AUDIO_NAME
+                apply_gate(
+                    source_wav,
+                    gated,
+                    events,
+                    taxonomy=taxonomy,
+                    gate_categories=gate_cats,
+                )
+                haptic_input = gated
+            no_events_detected = len(events) == 0
+            no_haptic_events = len(gate_events) == 0
+        else:
+            no_events_detected = event_result.no_events_detected
+            no_haptic_events = event_result.no_haptic_events
+            gate_events = events_for_haptic_gate(
+                events or [], taxonomy, gate_categories=gate_cats
+            )
+            if event_result.gated_wav is not None and event_result.gated_wav.exists():
+                haptic_input = event_result.gated_wav
     elif enable_context_detection:
         events_json_path = output_dir / OUTPUT_NAMES["events_json"]
         payload = {
@@ -212,15 +269,31 @@ def generate_candidate_tracks(
             percept.process_file,
             process_kwargs={"content": content_type},
             continuous=profile,
+            taxonomy=taxonomy,
         )
         stitch_algorithm_output(
-            source_wav, gate_events, out_b, freq_shift.process_file, continuous=profile
+            source_wav,
+            gate_events,
+            out_b,
+            freq_shift.process_file,
+            continuous=profile,
+            taxonomy=taxonomy,
         )
         stitch_algorithm_output(
-            source_wav, gate_events, out_c, pitch_match.process_file, continuous=profile
+            source_wav,
+            gate_events,
+            out_c,
+            pitch_match.process_file,
+            continuous=profile,
+            taxonomy=taxonomy,
         )
         stitch_algorithm_output(
-            source_wav, gate_events, out_d, haptic_gen.process_file, continuous=profile
+            source_wav,
+            gate_events,
+            out_d,
+            haptic_gen.process_file,
+            continuous=profile,
+            taxonomy=taxonomy,
         )
 
         if events_json_path is not None:

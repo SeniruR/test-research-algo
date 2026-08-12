@@ -5,7 +5,8 @@ impulsive_encoder_threshold: 0.30
 # Lower threshold for sustained categories (vehicle, weather) — they score lower than explosions
 sustained_encoder_threshold: 0.25
 # Minimum seconds between impulsive peaks (separate shots / blasts)
-impulsive_min_peak_distance_sec: 0.7
+# 0.45 keeps volley shots ~0.5 s apart (11.16 then 11.66)
+impulsive_min_peak_distance_sec: 0.45
 # Half-width used as minimum post-onset content for impulsive gates
 impulsive_event_half_width_sec: 0.45
 impulsive_onset_search_radius_sec: 0.75
@@ -13,22 +14,109 @@ impulsive_decay_tail_sec: 0.85
 impulsive_decay_threshold: 0.12
 # Short pre-roll before detected onset (gate start)
 impulsive_pre_roll_sec: 0.08
-# Cap sustained (vehicle, etc.) span in events.json / optional gate
+# Cap only used as a soft metadata hint; refine no longer recenters spans
 sustained_max_gate_sec: 2.5
+# Only glue nearly-touching chips — larger gaps are separate rumble bursts
+sustained_merge_gap_sec: 0.35
+# Rise is diagnostic only (calib). Vehicle gate uses absolute local RMS.
+sustained_burst_rise_ratio: 1.10
+sustained_burst_pre_sec: 0.7
+sustained_burst_post_sec: 1.5
+sustained_burst_max_sec: 2.5
+# Loudness gate: haptic windows = RMS islands (not AST start/end slabs)
+sustained_salience_mid_pct: 50
+sustained_salience_loud_pct: 99
+sustained_salience_mix: 0.40
+sustained_salience_min_sep: 1.45
+# Frames below this fraction of the loud level are silence, excluded from percentiles
+sustained_salience_silence_frac: 0.05
+# A rumble that eases off and comes back this many times is a rhythm, and its gaps
+# must stay quiet. Once bursts fill more than half a scene the median sits inside
+# them, so loudness percentiles alone read the scene as steady; what separates an
+# intermittent rumble from a drive filmed from a wider angle is that the quiet
+# stretches repeat and are short, instead of being one long stretch.
+sustained_rhythm_min_gaps: 2
+sustained_rhythm_gap_max_sec: 2.0
+# ...and that the two levels really are two levels. A steady idle ripples around
+# its own split threshold, which would otherwise look like a rhythm.
+sustained_rhythm_level_ratio: 2.0
+# Scenes: the loudness floor is measured per scene, not per clip, so a car rumble
+# recorded close cannot set the floor for a tank drive recorded far away in the
+# same cut-together clip.
+# A scene boundary is a level step this large that holds on both sides...
+sustained_scene_level_ratio: 2.5
+# ...for at least this long. A 2 s rumble burst over an engine bed is not a scene:
+# it has to keep being measured against that bed, not against itself.
+sustained_scene_min_sec: 3.5
+sustained_scene_block_sec: 2.0
+# Each side of a boundary has to hold its level within this factor. Without it a
+# loud passage inside one scene reads as two boundaries and the stretch between
+# them gets a floor of its own.
+sustained_scene_stable_ratio: 2.0
+# No scene floor may fall below this fraction of the clip's loudest level. Without
+# it a scene holding nothing but room tone or a quiet engine bed measures itself,
+# finds one loudness mode and gates the whole thing on as rumble. Measured cases
+# sit at 0.12-0.13 (bed, must stay out) and 0.21-0.23 (drive recorded far away,
+# must stay in).
+sustained_salience_scene_floor_frac: 0.16
+# Island edges walk out to this fraction of the threshold (rumble ramps before it gates)
+sustained_island_edge_frac: 0.75
+sustained_island_max_extend_sec: 0.4
+sustained_salience_min_sec: 0.50
+# Only bridge tiny holes; 0.3 s was gluing 24s rumble through 28s dip to 29–32
+sustained_salience_gap_sec: 0.18
+sustained_salience_peak_win_sec: 0.15
+# Drop spiky blobs (34–35) whose closed island is mostly below threshold
+sustained_salience_min_duty: 0.55
+# Short loud onset with no island: crop AST span, never keep a 10 s slab
+sustained_salience_max_orphan_sec: 1.2
 # Onset proposal stage (before AST/ViViT)
 proposal_rms_hop_ms: 5.0
 proposal_threshold_ratio: 0.18
 proposal_search_pad_sec: 0.75
 proposal_window_sec: 1.0
 # Sparse scan for sustained sounds (vehicle, human activity) without sharp onsets
-proposal_sustained_hop_sec: 2.0
-# Impulsive peak snap: search around classifier hint, snap via spectral flux
-impulsive_onset_back_sec: 0.6
+proposal_sustained_hop_sec: 1.0
+# Impulsive peak snap: search around classifier hint, snap via spectral flux.
+# Lookback stays short: a 0.9 s window let a clank 0.88 s earlier steal the onset.
+impulsive_onset_back_sec: 0.35
 impulsive_onset_forward_sec: 1.2
-# On short clips, look all the way back to t=0 so a late AST hit can snap to the muzzle
-impulsive_short_clip_sec: 20.0
+# Only tiny clips look back to t=0 (4 s muzzle clip). Mixed 16 s clips must not.
+impulsive_short_clip_sec: 8.0
 onset_flux_hop_ms: 5.0
 onset_flux_min_ratio: 0.45
+# Earliest onset must still be this fraction of the strongest attack in the window
+onset_flux_early_rel: 0.55
+# Proposal stage: quieter volley shots vs the loudest cannon
+onset_flux_proposal_ratio: 0.16
+# Mask continuous bed by sustained spans when rumble is intermittent
+sustained_mask_min_events: 3
+sustained_mask_min_coverage: 0.15
+
+# --- Frame-level SED (DCASE-style decoding) ---------------------------------
+# Window tagging localizes onsets to ~1 s. These posteriors are on a 100 ms grid
+# (PANNs framewise is ~10 ms when installed), then decoded with hysteresis.
+sed_enabled: true
+sed_backend: auto        # auto | ast_dense | panns
+sed_window_sec: 1.0
+sed_hop_sec: 0.1
+sed_median_impulsive_sec: 0.15
+sed_median_sustained_sec: 0.45
+sed_onset_high: 0.30
+sed_onset_low: 0.15
+sed_min_event_sec_impulsive: 0.10
+sed_min_event_sec_sustained: 0.40
+sed_merge_gap_sec: 0.20
+# Splitting a volley: a shot peak must reach this fraction of the span's strongest
+sed_peak_rel: 0.60
+
+# --- Video branch -----------------------------------------------------------
+# Disabled on purpose. ViViT is Kinetics-400 (human actions: "driving car",
+# "exploding firecrackers"), which does not cover explosion / engine rumble as
+# acoustic events, so video_score came out null on every event and contributed
+# nothing to fusion. Revisit with an audio-visual model trained on VGGSound or a
+# learned head on VideoMAE features, then set use_video: true.
+use_video: false
 
 categories:
   weather:

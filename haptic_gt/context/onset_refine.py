@@ -82,17 +82,56 @@ def _spectral_flux(
     return np.asarray(times, dtype=np.float64), flux
 
 
+def local_flux_ratio(
+    times: np.ndarray,
+    flux: np.ndarray,
+    peak_t: float,
+    *,
+    pre_sec: float = 0.65,
+    gap_sec: float = 0.04,
+    min_pre_sec: float = 0.20,
+    max_ratio: float = 999.0,
+) -> float:
+    """Peak flux vs median flux just before it (sharp attack vs rumble).
+
+    Returns 0 without enough pre-context: the clip's first frames always look
+    like a huge attack (silence to signal) and must not count as a transient.
+    After digital silence the baseline is exactly 0, so the ratio is capped
+    rather than allowed to blow up to 1e14.
+    """
+    if flux.size == 0 or times.size == 0:
+        return 0.0
+    idx = int(np.argmin(np.abs(times - peak_t)))
+    peak_v = float(flux[idx])
+    pre_mask = (times >= peak_t - pre_sec) & (times < peak_t - gap_sec)
+    pre = flux[pre_mask]
+    pre_times = times[pre_mask]
+    if pre.size == 0:
+        return 0.0
+    if float(pre_times[-1] - pre_times[0]) < min_pre_sec:
+        return 0.0
+    baseline = float(np.median(pre))
+    if baseline <= 0.0:
+        baseline = float(np.mean(pre))
+    if baseline <= 0.0:
+        return max_ratio if peak_v > 0.0 else 0.0
+    return min(peak_v / baseline, max_ratio)
+
+
 def _pick_onset_from_flux(
     times: np.ndarray,
     flux: np.ndarray,
     *,
     min_ratio: float = 0.45,
     prefer_earliest: bool = False,
+    early_rel: float = 0.55,
 ) -> float | None:
     """Pick onset from flux peaks.
 
     Default: strongest peak, earliest among near-ties.
-    ``prefer_earliest``: first peak above ``min_ratio`` of max (muzzle before rumble).
+    ``prefer_earliest``: earliest peak that is still comparable to the strongest
+    one in the window (``early_rel``). A weak earlier bump — a track clank
+    before the shot — must not steal the onset.
     """
     if flux.size == 0:
         return None
@@ -111,7 +150,9 @@ def _pick_onset_from_flux(
         return float(times[int(np.argmax(flux))])
 
     if prefer_earliest:
-        earliest = min(candidates, key=lambda i: float(times[i]))
+        best_val = max(float(flux[i]) for i in candidates)
+        pool = [i for i in candidates if float(flux[i]) >= best_val * early_rel]
+        earliest = min(pool or candidates, key=lambda i: float(times[i]))
         return float(times[earliest])
 
     # Prefer the highest flux; among near-ties, earliest attack (muzzle), not later rumble
@@ -155,8 +196,9 @@ def _find_impulsive_peak(
     Uses high-frequency-weighted spectral flux (not RMS max), which better
     matches gunshot / explosion attacks. Falls back to RMS if flux is weak.
 
-    On short clips, look back to t=0 so a late AST/ViViT hit (e.g. rumble)
-    can still snap to an earlier muzzle blast.
+    On short clips only, look back to t=0 so a late AST/ViViT hit (e.g. rumble)
+    can still snap to an earlier muzzle blast. Mixed clips keep a local window
+    so tank-drive clanks are not stolen as the cannon onset.
     """
     back = taxonomy.impulsive_onset_back_sec
     forward = taxonomy.impulsive_onset_forward_sec
@@ -170,12 +212,12 @@ def _find_impulsive_peak(
 
     seg = audio[s0:s1]
     times, flux = _spectral_flux(seg, sr, hop_ms=hop_ms)
-    short_clip = duration_sec <= taxonomy.impulsive_short_clip_sec
     onset_rel = _pick_onset_from_flux(
         times,
         flux,
         min_ratio=taxonomy.onset_flux_min_ratio,
-        prefer_earliest=short_clip,
+        prefer_earliest=True,
+        early_rel=taxonomy.onset_flux_early_rel,
     )
     if onset_rel is not None:
         return float(s0 / sr + onset_rel)
@@ -271,14 +313,15 @@ def refine_event_timing(
             end = min(duration_sec, max(min_end, decay_end))
         else:
             peak = acoustic_peak
-            span = ev.end_sec - ev.start_sec
-            if span > sustained_max:
-                start = max(0.0, peak - sustained_max / 2.0)
-                end = min(duration_sec, start + sustained_max)
-            else:
-                start = max(0.0, ev.start_sec)
-                end = min(duration_sec, ev.end_sec)
-            # Keep peak inside [start, end]
+            # Keep classifier span; do NOT recenter around peak (that invents
+            # rumble during quiet gaps between intermittent bursts).
+            start = max(0.0, ev.start_sec)
+            end = min(duration_sec, max(ev.end_sec, peak + 0.05))
+            if end < start:
+                end = min(duration_sec, start + 0.25)
+            # Soft cap: trim the quieter tail, keep the onset side
+            if end - start > sustained_max and sustained_max > 0:
+                end = min(end, start + sustained_max)
             peak = min(max(peak, start), end)
 
         refined.append(

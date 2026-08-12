@@ -427,6 +427,292 @@ def test_refine_impulsive_peak():
         assert refined[0].end_sec > refined[0].peak_sec
 
 
+def test_refine_snaps_muzzle_on_long_clip():
+    """A comparably loud muzzle just before the boom still wins the onset."""
+    import tempfile
+    from pathlib import Path
+
+    tax = load_taxonomy()
+    sr = 44100
+    duration = 25.0
+    t = np.arange(int(duration * sr), dtype=np.float32) / sr
+    rng = np.random.default_rng(3)
+    early = rng.standard_normal(t.shape[0]).astype(np.float32)
+    early *= 1.0 * np.exp(-((t - 9.90) ** 2) / (2 * 0.008**2))
+    late = rng.standard_normal(t.shape[0]).astype(np.float32)
+    late *= 1.15 * np.exp(-((t - 10.12) ** 2) / (2 * 0.04**2))
+    audio = (early + late).astype(np.float32)
+    with tempfile.TemporaryDirectory() as td:
+        wav_path = Path(td) / "long.wav"
+        sf.write(wav_path, audio, sr, subtype="PCM_16")
+        events = [
+            DetectedEvent("explosion", "Explosion", 9.95, 10.12, 10.8, 0.82)
+        ]
+        refined = refine_event_timing(events, wav_path, tax)
+        assert abs(refined[0].peak_sec - 9.90) < 0.12, refined[0].peak_sec
+
+
+def test_refine_keeps_blast_and_ignores_earlier_clank():
+    """A weak clank before the shot must not steal the onset."""
+    import tempfile
+    from pathlib import Path
+
+    tax = load_taxonomy()
+    sr = 44100
+    duration = 16.0
+    t = np.arange(int(duration * sr), dtype=np.float32) / sr
+    rng = np.random.default_rng(7)
+    clank = rng.standard_normal(t.shape[0]).astype(np.float32)
+    clank *= 0.18 * np.exp(-((t - 9.24) ** 2) / (2 * 0.006**2))
+    shot = rng.standard_normal(t.shape[0]).astype(np.float32)
+    shot *= 1.15 * np.exp(-((t - 10.12) ** 2) / (2 * 0.02**2))
+    audio = (clank + shot).astype(np.float32)
+    with tempfile.TemporaryDirectory() as td:
+        wav_path = Path(td) / "clank.wav"
+        sf.write(wav_path, audio, sr, subtype="PCM_16")
+        events = [DetectedEvent("explosion", "Explosion", 10.0, 10.12, 10.8, 0.82)]
+        refined = refine_event_timing(events, wav_path, tax)
+        assert abs(refined[0].peak_sec - 10.12) < 0.12, refined[0].peak_sec
+
+
+def test_refine_does_not_drag_volley_shot_backwards():
+    """Each shot in a volley keeps its own onset (no 0.9 s backward slide)."""
+    import tempfile
+    from pathlib import Path
+
+    tax = load_taxonomy()
+    sr = 44100
+    duration = 16.0
+    t = np.arange(int(duration * sr), dtype=np.float32) / sr
+    rng = np.random.default_rng(14)
+    audio = np.zeros_like(t)
+    for peak_t, amp in ((11.00, 0.62), (11.52, 1.0), (13.40, 0.86)):
+        burst = rng.standard_normal(t.shape[0]).astype(np.float32)
+        audio = audio + burst * (amp * np.exp(-((t - peak_t) ** 2) / (2 * 0.012**2)))
+    with tempfile.TemporaryDirectory() as td:
+        wav_path = Path(td) / "volley.wav"
+        sf.write(wav_path, audio.astype(np.float32), sr, subtype="PCM_16")
+        events = [
+            DetectedEvent("explosion", "Explosion", 11.4, 11.52, 12.0, 0.75),
+            DetectedEvent("explosion", "Explosion", 13.3, 13.40, 13.9, 0.75),
+        ]
+        refined = refine_event_timing(events, wav_path, tax)
+        peaks = sorted(e.peak_sec for e in refined)
+        assert abs(peaks[0] - 11.52) < 0.12, peaks
+        assert abs(peaks[1] - 13.40) < 0.12, peaks
+
+
+def test_promote_recovers_cannon_labeled_vehicle():
+    import tempfile
+    from pathlib import Path
+
+    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+
+    tax = load_taxonomy()
+    sr = 44100
+    duration = 4.0
+    t = np.arange(int(duration * sr), dtype=np.float32) / sr
+    rng = np.random.default_rng(4)
+    blast = rng.standard_normal(t.shape[0]).astype(np.float32)
+    blast *= 0.9 * np.exp(-((t - 1.5) ** 2) / (2 * 0.008**2))
+    bed = (0.08 * np.sin(2 * np.pi * 40 * t)).astype(np.float32)
+    audio = (bed + blast).astype(np.float32)
+    with tempfile.TemporaryDirectory() as td:
+        wav = Path(td) / "cannon.wav"
+        sf.write(wav, audio, sr, subtype="PCM_16")
+        events = [DetectedEvent("vehicle", "Vehicle", 1.0, 1.5, 2.2, 0.66)]
+        scores = [
+            EncoderScore(1.5, "Explosion", 0.22, "audio"),
+            EncoderScore(1.5, "Vehicle", 0.66, "audio"),
+        ]
+        out = promote_impulsive_transients(events, wav, scores, tax)
+        explosions = [e for e in out if e.category == "explosion"]
+        assert len(explosions) >= 1
+        assert abs(explosions[0].peak_sec - 1.5) < 0.2
+
+
+def test_promote_recovers_quieter_volley_shots():
+    """Later shots quieter than the first cannon must still be promoted."""
+    import tempfile
+    from pathlib import Path
+
+    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+
+    tax = load_taxonomy()
+    sr = 44100
+    duration = 16.0
+    t = np.arange(int(duration * sr), dtype=np.float32) / sr
+    rng = np.random.default_rng(8)
+    audio = (0.08 * np.sin(2 * np.pi * 40 * t)).astype(np.float32)
+    shots = [9.64, 11.16, 11.66, 12.45, 13.50, 14.55]
+    amps = [1.0, 0.75, 0.72, 0.70, 0.68, 0.65]
+    for peak_t, amp in zip(shots, amps):
+        burst = rng.standard_normal(t.shape[0]).astype(np.float32)
+        audio = audio + burst * (amp * np.exp(-((t - peak_t) ** 2) / (2 * 0.008**2)))
+    with tempfile.TemporaryDirectory() as td:
+        wav = Path(td) / "volley.wav"
+        sf.write(wav, audio, sr, subtype="PCM_16")
+        events = [
+            DetectedEvent("explosion", "Explosion", 9.56, 9.64, 10.4, 0.82),
+            DetectedEvent("vehicle", "Vehicle", 14.9, 15.4, 15.8, 0.66),
+        ]
+        scores = [
+            EncoderScore(9.64, "Explosion", 0.82, "audio"),
+            EncoderScore(11.16, "Explosion", 0.42, "audio"),
+            EncoderScore(11.66, "Explosion", 0.40, "audio"),
+            EncoderScore(12.45, "Explosion", 0.38, "audio"),
+            EncoderScore(13.50, "Vehicle", 0.50, "audio"),
+            EncoderScore(14.55, "Vehicle", 0.48, "audio"),
+        ]
+        out = promote_impulsive_transients(events, wav, scores, tax)
+        peaks = sorted(e.peak_sec for e in out if e.category == "explosion")
+        assert len(peaks) >= 5, peaks
+        # 13.50 has no explosion score: recovered by shot-level flux alone
+        for want in (9.64, 11.16, 11.66, 12.45, 13.50):
+            assert any(abs(p - want) < 0.25 for p in peaks), (want, peaks)
+
+
+def test_promote_ignores_track_clanks_in_drive():
+    """Sharp but quiet tank-track clanks must not become explosions."""
+    import tempfile
+    from pathlib import Path
+
+    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+
+    tax = load_taxonomy()
+    sr = 44100
+    duration = 16.0
+    t = np.arange(int(duration * sr), dtype=np.float32) / sr
+    rng = np.random.default_rng(11)
+    audio = (0.10 * np.sin(2 * np.pi * 40 * t)).astype(np.float32)
+    clank_times = np.arange(0.4, 9.0, 0.8)
+    for peak_t in clank_times:
+        clank = rng.standard_normal(t.shape[0]).astype(np.float32)
+        audio = audio + clank * (0.10 * np.exp(-((t - peak_t) ** 2) / (2 * 0.006**2)))
+    for peak_t in (9.64, 11.16):
+        shot = rng.standard_normal(t.shape[0]).astype(np.float32)
+        audio = audio + shot * (1.0 * np.exp(-((t - peak_t) ** 2) / (2 * 0.010**2)))
+    with tempfile.TemporaryDirectory() as td:
+        wav = Path(td) / "clanks.wav"
+        sf.write(wav, audio.astype(np.float32), sr, subtype="PCM_16")
+        events = [DetectedEvent("explosion", "Explosion", 9.56, 9.64, 10.4, 0.82)]
+        scores = [
+            EncoderScore(9.64, "Explosion", 0.82, "audio"),
+            EncoderScore(11.16, "Explosion", 0.75, "audio"),
+            EncoderScore(2.0, "Explosion", 0.19, "audio"),
+            EncoderScore(5.0, "Explosion", 0.18, "audio"),
+        ]
+        out = promote_impulsive_transients(events, wav, scores, tax)
+        explosions = [e for e in out if e.category == "explosion"]
+        assert all(e.peak_sec > 9.0 for e in explosions), [
+            round(e.peak_sec, 2) for e in explosions
+        ]
+        assert any(abs(e.peak_sec - 11.16) < 0.25 for e in explosions)
+
+
+def test_demote_rumble_false_explosion():
+    """Steady tank drive must not stay labeled as an explosion."""
+    import tempfile
+    from pathlib import Path
+
+    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+
+    tax = load_taxonomy()
+    sr = 44100
+    duration = 12.0
+    t = np.arange(int(duration * sr), dtype=np.float32) / sr
+    rng = np.random.default_rng(9)
+    bed = (0.28 * np.sin(2 * np.pi * 40 * t)).astype(np.float32)
+    blast = rng.standard_normal(t.shape[0]).astype(np.float32)
+    blast *= 0.95 * np.exp(-((t - 8.0) ** 2) / (2 * 0.008**2))
+    audio = (bed + blast).astype(np.float32)
+    with tempfile.TemporaryDirectory() as td:
+        wav = Path(td) / "drive.wav"
+        sf.write(wav, audio, sr, subtype="PCM_16")
+        events = [
+            DetectedEvent("explosion", "Explosion", 1.8, 1.94, 2.8, 0.82),
+            DetectedEvent("explosion", "Explosion", 7.9, 8.0, 8.7, 0.82),
+        ]
+        scores = [
+            EncoderScore(1.94, "Explosion", 0.82, "audio"),
+            EncoderScore(8.0, "Explosion", 0.82, "audio"),
+        ]
+        out = promote_impulsive_transients(events, wav, scores, tax)
+        explosions = [e for e in out if e.category == "explosion"]
+        assert all(abs(e.peak_sec - 1.94) > 0.5 for e in explosions), [
+            e.peak_sec for e in explosions
+        ]
+        assert any(abs(e.peak_sec - 8.0) < 0.2 for e in explosions)
+
+
+def test_clip_start_is_not_a_transient():
+    """Silence-to-signal at t=0 must not look like an attack."""
+    from haptic_gt.context.onset_refine import _spectral_flux, local_flux_ratio
+
+    sr = 44100
+    duration = 3.0
+    t = np.arange(int(duration * sr), dtype=np.float32) / sr
+    rng = np.random.default_rng(12)
+    audio = (0.2 * rng.standard_normal(t.shape[0])).astype(np.float32)
+    times, flux = _spectral_flux(audio, sr, hop_ms=5.0)
+    assert local_flux_ratio(times, flux, float(times[1])) == 0.0
+    assert local_flux_ratio(times, flux, 1.5) > 0.0
+
+
+def test_shot_calibration_marks_hit_miss_and_fp():
+    import tempfile
+    from pathlib import Path
+
+    from haptic_gt.context.shot_calib import (
+        calibrate_shot_times,
+        format_shot_calibration_table,
+        scan_shot_attacks,
+    )
+
+    sr = 44100
+    duration = 8.0
+    t = np.arange(int(duration * sr), dtype=np.float32) / sr
+    rng = np.random.default_rng(13)
+    audio = (0.05 * np.sin(2 * np.pi * 40 * t)).astype(np.float32)
+    for peak_t in (2.0, 5.0):
+        shot = rng.standard_normal(t.shape[0]).astype(np.float32)
+        audio = audio + shot * (1.0 * np.exp(-((t - peak_t) ** 2) / (2 * 0.01**2)))
+    events = {
+        "events": [
+            {
+                "event_id": "event_001",
+                "category": "explosion",
+                "peak_sec": 2.02,
+                "confidence": 0.81,
+                "audio_score": 0.81,
+            },
+            {
+                "event_id": "event_002",
+                "category": "explosion",
+                "peak_sec": 7.0,
+                "confidence": 0.62,
+                "audio_score": 0.62,
+            },
+        ]
+    }
+    with tempfile.TemporaryDirectory() as td:
+        wav = Path(td) / "shots.wav"
+        sf.write(wav, audio.astype(np.float32), sr, subtype="PCM_16")
+        report = calibrate_shot_times(wav, [2.0, 5.0], events)
+        scan = scan_shot_attacks(wav, top_n=10)
+
+    assert report["summary"]["hits"] == 1
+    assert report["summary"]["misses"] == 1
+    assert report["summary"]["false_positives"] == 1
+    missed = [r for r in report["manual_shots"] if r["status"] == "miss"][0]
+    # The 5.0 s shot is real audio even though no event matched it
+    assert abs(missed["nearest_attack_sec"] - 5.0) < 0.05
+    assert missed["flux_rel_shot_level"] > 0.5
+    table = format_shot_calibration_table(report)
+    assert "event_001" in table
+    assert any(abs(a["t_sec"] - 5.0) < 0.05 for a in scan["attacks"])
+
+
 def test_debug_events_table():
     from haptic_gt.context.debug_events import EventDebugRow, format_events_table
 

@@ -124,7 +124,15 @@ def classify_video_frames(
     *,
     top_k: int = 5,
 ) -> list[EncoderScore]:
-    """Run ViViT on a pre-extracted frame tensor [T, C, H, W] in [0,1]."""
+    """Run ViViT on a pre-extracted frame tensor [T, C, H, W] in [0,1].
+
+    NOTE: the video branch is disabled by default (``use_video: false``). ViViT is
+    trained on Kinetics-400 human actions, whose labels ("driving car",
+    "exploding firecrackers") do not correspond to the acoustic events we gate on,
+    so ``video_score`` was null on every event and fusion never used it. To bring
+    video back, swap in an audio-visual model (VGGSound-style) or a learned head
+    on VideoMAE/CLIP features, then set ``use_video: true``.
+    """
     if frames.size == 0:
         return []
     try:
@@ -176,10 +184,17 @@ def run_encoder_on_windows(
     half = window_sec / 2.0
     scores: list[EncoderScore] = []
 
+    from haptic_gt.context.taxonomy import load_taxonomy
+
+    use_video = load_taxonomy().use_video
+
     for win in windows:
         t0 = max(0.0, win.center_sec - half)
         t1 = min(duration_sec, win.center_sec + half)
         scores.extend(classify_audio_window(audio_16k, t0, t1, top_k=top_k))
+
+        if not use_video:
+            continue
 
         bin_start = int(t0 * timeline_hz)
         bin_end = int(t1 * timeline_hz)
@@ -226,11 +241,19 @@ def run_encoder_pass(
             top_k=top_k,
         )
 
+    from haptic_gt.context.taxonomy import load_taxonomy
+
+    use_video = load_taxonomy().use_video
+
     scores: list[EncoderScore] = []
     t = 0.0
     while t < duration_sec:
         end = min(duration_sec, t + window_sec)
         scores.extend(classify_audio_window(audio_16k, t, end, top_k=top_k))
+
+        if not use_video:
+            t += hop_sec
+            continue
 
         bin_start = int(t * 100)
         bin_end = int(end * 100)
