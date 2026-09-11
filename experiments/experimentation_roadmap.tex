@@ -16,40 +16,62 @@
 
 \begin{abstract}
 \noindent
-Short record of approaches we tried for video-to-haptic ground-truth generation, their outcomes, and whether we changed approach or continued.
+Short record of approaches we tried for video-to-haptic ground-truth generation,
+their outcomes, and whether we changed approach or continued.
+The detector finds start, peak, and end on its own (no hardcoded times).
+Grading marks in the notebook score a run; they never steer detection.
 \end{abstract}
 
 \section{Goal}
-From a short video, make four vibration sound files (algorithms A-D) so people can feel and rate them.
-We want continuous flow (like thunder rumble) plus clear hits (like blasts), similar to a dense hand made reference map not only sparse spikes.
+From a short video, make four vibration sound files (algorithms A--D) so people can feel and rate them.
+We want continuous flow (like thunder rumble) plus clear hits (like blasts), similar to a dense hand-made reference map, not only sparse spikes.
+
+Hard cases that keep driving the work:
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item Mixed clips: cannon volley, then a distant tank drive, then a close car rumble in one file.
+  \item Intermittent car rumble: vibrate on bursts, stay quiet in the gaps. No fake bang accents on rumble.
+  \item Engine-start swell and camera-angle loudness changes that are still the same drive.
+\end{itemize}
 
 \section{Current stack}
 \begin{enumerate}[leftmargin=*,itemsep=2pt]
-  \item Pull mono sound from the video (44.1\,kHz).
-  \item Find candidate moments, then classify them with a sound model (AST) and a video model (ViViT), and merge into an event list (\texttt{events.json}).
-  \item Keep only chosen event types (weather, gunshot, explosion, vehicle) and build a filtered audio clip (\texttt{gated\_audio.wav}).
-  \item Run Sound2Hap A-D: quiet continuous vibration underneath (bed) plus stronger short hits on top (accents). The four algorithms themselves are unchanged.
+  \item Pull mono sound from the video (44.1\,kHz). Video classification is parked (\texttt{use\_video: false}).
+  \item Frame-level sound event detection (SED): PANNs when installed, otherwise dense AST windows. Decode with median filter + hysteresis, then split volleys at posterior peaks.
+  \item Snap bangs to spectral-flux attacks. Promote missed shots from flux (anchor + volley rules). Demote rumble-like false bangs.
+  \item Gate vehicle rumble on loud RMS islands, with one loudness floor \emph{per scene} so a close car cannot hide a distant drive. Repeated quiet stretches are treated as rhythm (gaps stay quiet); one long quiet stretch is treated as a camera angle (kept).
+  \item Write \texttt{events.json} (includes a \texttt{sustained\_gate} report: floor per scene, dropped spans) and \texttt{gated\_audio.wav}.
+  \item Run Sound2Hap A--D: quiet continuous vibration underneath (bed) plus stronger short hits on top (accents, 25\,ms lead, 45\,ms release between volley hits). Rumble spans follow source loudness and rhythm. The four algorithms themselves are unchanged.
 \end{enumerate}
+
+Scoring (notebook, after generation): \texttt{TRUTH\_SHOT\_TIMES} / \texttt{TRUTH\_RUMBLE\_TIMES} are a grading key for this clip only. Shots get DCASE-style onset-collar F1; rumble gets span coverage. Empty lists mean ``nothing to score'', not a detector failure.
 
 \section{Terms}
 \begin{itemize}[leftmargin=*,itemsep=3pt]
   \item Fixed list of event types we care about (taxonomy).
   \item Model that links images, audio, and text in one shared space (ImageBind).
   \item Finds objects in each video frame with boxes (YOLO).
+  \item Window tagging: classify $\sim$1\,s chunks, so onsets land on a coarse grid.
+  \item Frame-level SED: a score every 10--100\,ms, decoded into start/end like DCASE.
   \item Break one long blob of sound into separate bangs at each loud peak (peak split).
-  \item Snap the event start to the exact moment the bang begins (onset refine).
+  \item Snap the event start to the exact moment the bang begins (onset refine / spectral flux).
+  \item Promote a flux attack that the classifier missed, if it matches this clip's blast level (impulsive promote; volley mode relaxes the rule near a confirmed blast).
   \item Keep audio only at the times of selected event types (temporal + category gate).
   \item Only pass short sharp bangs, ignore long rumble (impulsive gate).
+  \item Loudness floor for rumble: keep frames above a threshold measured on active (non-silent) audio (salience).
+  \item Scene: a stretch of the clip with its own recording level (cut-together sources). Each scene gets its own floor.
+  \item RMS island: a contiguous loud run that becomes one haptic rumble window.
   \item How many real events we find versus miss (detection recall).
-  \item Scan every few seconds for steady sounds, and snap bangs using a sudden change in the spectrum (hop + flux onset).
+  \item Event-based F1: one-to-one onset match inside a collar (DCASE Task~4 uses 200\,ms).
+  \item Coverage: for rumble, fraction of hand marks that fall inside a detected span (marks are moments in a burst, not onsets).
   \item Automatically boost quiet parts so they are not ignored (AGC level).
   \item Quiet continuous vibration that runs under the whole clip (bed).
   \item Mute the quietest share of the track so real silence stays silent (percentile silence).
   \item Squeeze the gap between loud and quiet so soft rumble still feels (envelope-exponent compression).
-  \item Average nearby gain values so level changes are soft, not jumpy (mean-smooth compression).
-  \item Remember recent loud levels so a bang does not over boost the quiet parts next to it (peak hold).
+  \item Remember recent loud levels so a bang does not over-boost the quiet parts next to it (peak hold).
   \item Scale the quiet continuous layer to a target strength (normalize bed).
   \item Strong short hits placed on top of the quiet layer (accents).
+  \item Place the accent slightly before the audio attack so a slow actuator is felt on time (accent lead).
+  \item Taper the previous bang before the next lands, so a volley reads as separate hits (accent release).
   \item Phone code that turns WAV loudness into vibration strength (parser).
 \end{itemize}
 
@@ -64,19 +86,23 @@ We want continuous flow (like thunder rumble) plus clear hits (like blasts), sim
 \midrule
 Early notebook with shared image-audio-text model (ImageBind) / video model (VideoMAE) & Incomplete, because it was not linked to Sound2Hap & \textbf{Changed to} frozen sound model (AST) + video model (ViViT) package \\
 \addlinespace
-Motion-to-vibration idea (HapticLens style) & No named event types (weather, gunshot, etc.) & \textbf{Changed to} fixed event list (taxonomy) + Sound2Hap A-D \\
+Motion-to-vibration idea (HapticLens style) & No named event types (weather, gunshot, etc.) & \textbf{Changed to} fixed event list (taxonomy) + Sound2Hap A--D \\
 \addlinespace
 Ask ImageBind with text queries for events & Too heavy for Colab flow & \textbf{Changed to} AST + ViViT only \\
 \addlinespace
-Find objects in frames with boxes (YOLO) for events & Misses off-screen or sound-only cues & \textbf{Continued} AST + ViViT \\
+Find objects in frames with boxes (YOLO) for events & Misses off-screen or sound-only cues & \textbf{Continued} AST (+ later SED) \\
 \addlinespace
 Colab Google Drive mount & Permission friction for users & \textbf{Changed to} simple file upload \\
 \addlinespace
-Require both sound and video to accept a gunshot & Missed many explosions & \textbf{Changed to} allow sharp bangs from sound alone, and continued detection \\
+Require both sound and video to accept a gunshot & Missed many explosions & \textbf{Changed to} allow sharp bangs from sound alone \\
 \addlinespace
-Merge nearby blasts into one long event & Many blasts became one long event & \textbf{Changed to} break at loud peaks (peak split) + snap bang start (onset refine), and continued \\
+Merge nearby blasts into one long event & Many blasts became one long event & \textbf{Changed to} break at loud peaks (peak split) + snap bang start (onset refine) \\
 \addlinespace
-Sound2Hap signal-processing A-D & Working candidate generators & \textbf{Continued} (kept as-is, not redesigned) \\
+ViViT on Kinetics-400 fused with audio & \texttt{video\_score} was null on every event; Kinetics labels (``driving car'', ``exploding firecrackers'') are not acoustic events & \textbf{Changed to} park video (\texttt{use\_video: false}). Revisit with VGGSound or a learned head on VideoMAE \\
+\addlinespace
+Window tagging (AST on $\sim$1\,s windows) & Onsets drifted onto the 1\,s grid; volleys collapsed; mixed clips missed shots & \textbf{Changed to} frame-level SED (PANNs $\sim$10\,ms when installed, else dense AST) + hysteresis decode \\
+\addlinespace
+Sound2Hap signal-processing A--D & Working candidate generators & \textbf{Continued} (kept as-is, not redesigned) \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -96,11 +122,11 @@ Only short sharp bangs (impulsive gate) & Missed sustained thunder / tank rumble
 \addlinespace
 One folder of 4 WAVs per detected event & Not desired for evaluation UX & \textbf{Changed to} one full-length WAV per algorithm (4 total) \\
 \addlinespace
-Skip A-D when no selected events & Empty outputs, Colab shows ``tracks missing'' & \textbf{Continued} by design, because messaging is still unclear \\
+Skip A--D when no selected events & Empty outputs, Colab shows ``tracks missing'' & \textbf{Continued} by design, because messaging is still unclear \\
 \addlinespace
-Find loud moments first, then classify only those (propose-then-classify) & Faster, but still misses some tank cannons & \textbf{Continued}, because how many real events we find (detection recall) is still incomplete \\
+Find loud moments first, then classify only those (propose-then-classify) & Faster, but still misses some tank cannons & \textbf{Superseded by} frame-level SED over the whole clip \\
 \addlinespace
-Scan every few seconds for steady sounds + snap bangs via spectrum jumps (hop + flux onset) & Better vehicle/weather coverage, but cannons still often missed & \textbf{Continued} refining thresholds \\
+Scan every few seconds for steady sounds + snap bangs via spectrum jumps (hop + flux onset) & Better vehicle/weather coverage, but cannons still often missed & \textbf{Continued} as a refine/promote stage after SED, not as the detector itself \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -115,7 +141,7 @@ Reference hand-made map \texttt{videoplayback\_output\_haptic\_map[1].json}: abo
 \toprule
 \textbf{What we tried} & \textbf{Outcome} & \textbf{Changed to / Continued?} \\
 \midrule
-Run A-D on the full clip as the quiet continuous layer (bed) without boosting quiet parts & Algorithm A often output silence on soft passages & \textbf{Changed to} boost quiet parts first (AGC level), then reshape loud/quiet from the source \\
+Run A--D on the full clip as the quiet continuous layer (bed) without boosting quiet parts & Algorithm A often output silence on soft passages & \textbf{Changed to} boost quiet parts first (AGC level), then reshape loud/quiet from the source \\
 \addlinespace
 Mute bed whenever it was quiet relative to the loudest peak & Silenced most of algorithm D's rumble & \textbf{Changed to} mute only the quietest share of the track (percentile silence) \\
 \addlinespace
@@ -128,11 +154,104 @@ Scale the bed by its single loudest sample (normalize bed by peak) & Quiet conti
 \end{tabularx}
 \end{center}
 
+\subsection*{Finding bangs (cannons / shots) on mixed clips}
+The detector must find start/peak/end without hardcoded times. Mixed tank-drive + cannon clips were the stress test.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{What we tried} & \textbf{Outcome} & \textbf{Changed to / Continued?} \\
+\midrule
+Trust AST explosion scores alone & Late first muzzle; volley shots swallowed as vehicle; later shots missed & \textbf{Changed to} promote flux attacks the classifier missed \\
+\addlinespace
+Promote every strong flux peak (flux-only) & Drive clanks became false explosions (19 events on a car-rumble clip) & \textbf{Changed to} calibrate shot level from confident AST blasts, then require flux + prominence vs that level \\
+\addlinespace
+No confident AST blast $\to$ fall back to a low default flux & Volley shot at 12.45\,s missed: it sat in the previous boom's decay, so prominence looked weak & \textbf{Changed to} anchor blasts (loud attacks even without AST) + volley window: near an anchor, a quieter follow-up shot is still kept \\
+\addlinespace
+Long lookback (0.9\,s) + ``prefer earliest flux peak'' & Detected shots sat $\sim$0.88\,s \emph{before} the real attack (a clank stole the onset) & \textbf{Changed to} 0.35\,s lookback; an earlier peak must be at least 55\% as strong as the main attack \\
+\addlinespace
+Prominence = flux / silent pre-window & Infinite / huge ratios at clip start after digital silence & \textbf{Changed to} cap the ratio and require a minimum pre-context \\
+\addlinespace
+Split a volley wherever the SED posterior has any local max & Flat plateaus produced extra fake shots & \textbf{Changed to} require a peak strictly above neighbours and $\ge$60\% of the span's strongest peak \\
+\addlinespace
+Place the haptic accent on the sample of the audio attack & All A--D WAVs felt late on the phone (actuator needs a few cycles to be felt) & \textbf{Changed to} 25\,ms accent lead. Kept at 25\,ms after HITL; raise only if the phone still feels late \\
+\addlinespace
+Let the previous bang ring under the next & Volley felt like one long buzz, next hit ``late'' & \textbf{Changed to} 45\,ms cosine release so the previous accent is out of the way \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection*{Finding rumble (drive / car) without flattening it}
+Vehicle AST spans are only a category prior. Haptic windows are loud RMS islands. Quiet gaps must stay quiet.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{What we tried} & \textbf{Outcome} & \textbf{Changed to / Continued?} \\
+\midrule
+Gate rumble on RMS \emph{rise} vs a pre-window & Steady idle failed; intermittent bursts that sit on a loud bed also failed & \textbf{Changed to} absolute local RMS (salience), not rise \\
+\addlinespace
+One clip-wide loudness floor (percentiles, then Otsu) & Digital silence pulled the split to $\sim$0; the whole clip became one island. On mixed clips the close car set the floor above the distant drive & \textbf{Changed to} percentiles over active frames only (drop silence), then \textbf{scene-local} floors \\
+\addlinespace
+Otsu on the log-envelope histogram & Split near digital silence; \texttt{salience\_threshold: 0.0} and a 67\,s vehicle event on car rumble & \textbf{Changed to} drop Otsu; silence floor + active-frame percentiles \\
+\addlinespace
+Start the island at the gate crossing & Buzz started a third of a second into a ramp-up rumble (felt late) & \textbf{Changed to} walk edges outward to 75\% of the floor, then merge overlaps \\
+\addlinespace
+Unimodal threshold at half the median & Quieter camera angle of the same tank drive was gated out (coverage $\sim$68\%) & \textbf{Changed to} sit under the quietest sustained part ($0.6\times$ p10, floor $0.30\times$ median) \\
+\addlinespace
+One floor for a clip cut from several sources & Combined clip: drive 10--18\,s gone; car 18--29\,s one long buzz. Clip-wide floor 0.63 sat above the drive and below the car idle & \textbf{Changed to} split into scenes where the sustained level steps and holds, each with its own floor + a clip-wide minimum so room tone cannot gate itself on \\
+\addlinespace
+Percentiles alone to decide ``steady vs bursty'' & Once bursts fill more than half a scene the median sits inside them; car rumble looked unimodal and stayed one island & \textbf{Changed to} a rhythm rule: repeated short quiet stretches $\to$ split (gaps stay quiet); one long quiet stretch $\to$ keep (camera angle). Track clanks over a drive are not a rhythm \\
+\addlinespace
+Normalize every rumble span to the same peak & Distant drive hit as hard as a close car; a span with a clank came out quiet (the spike stole the peak) & \textbf{Changed to} scale by relative source RMS, then by energy not peak. Dynamics exponent 0.65 so bursts vs lulls stay audible. Algorithm A still flattens internally unless the global dynamics curve is reapplied to the span \\
+\addlinespace
+Dynamics exponent 0.30 on the bed & Burst 2.9$\times$ its gap rendered 0.98$\times$ --- no rhythm & \textbf{Changed to} 0.65 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection*{Scoring without steering the detector}
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{What we tried} & \textbf{Outcome} & \textbf{Changed to / Continued?} \\
+\midrule
+One \texttt{MANUAL\_*} list used both as HITL override and as the grading key & Calibration cell overwrote the generate-cell override; scores mixed two jobs & \textbf{Changed to} \texttt{MANUAL\_*} = detector override (generate cell, default \texttt{None}); \texttt{TRUTH\_*} = grading key only \\
+\addlinespace
+Leave the previous clip's shot/rumble times in the notebook & Combined-clip F1 was 0.0: marks at 9.64--14.55\,s landed in the tank drive; rumble marks went to 51\,s in a 29\,s file & \textbf{Changed to} empty \texttt{TRUTH\_*} by default; warn if marks fall past clip end \\
+\addlinespace
+Onset-collar F1 on rumble marks (moments inside a burst) & A correct long span covering every mark scored 0 (the ``onset'' is not the mark) & \textbf{Changed to} coverage (recall + active fraction) for sustained categories; F1 stays for bangs \\
+\addlinespace
+Fixed rumble scan window 28--45\,s & On a 29\,s clip the scan captured 1.1\,s of nothing and looked like a detector fault & \textbf{Changed to} scan the whole clip by default \\
+\addlinespace
+Clip-wide salience number in the calib report & Said a drive mark ``would pass'' while its own scene's floor rejected it & \textbf{Changed to} compare each mark to its scene floor; print \texttt{sustained\_gate} (floors, dropped spans) from \texttt{events.json} \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{Where a combined clip stood (run 28) vs the fixture now}
+User clip: first $\sim$6--8\,s cannons, 10--18\,s tank drive, then car rumble.
+
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+  \item \textbf{Cannons:} seven shots at the right times; drive clanks were not promoted to explosions. Timing of peaks was within $\sim$10\,ms of the attacks; remaining ``delay'' on the phone is actuator rise time (25\,ms lead kept).
+  \item \textbf{Drive:} missed. One clip-wide floor (0.63) sat above the distant drive.
+  \item \textbf{Car:} two spans; 21.7--27.8\,s glued three bursts into one 6\,s buzz (too sensitive / no rhythm).
+  \item \textbf{Scores:} invalid --- grading key was still the previous video.
+\end{itemize}
+
+On the synthetic combined-clip fixture after the scene + rhythm + rendering changes: drive 10--18\,s as one span (100\% coverage), car as four bursts of 1.4--2.0\,s with silent gaps, drive RMS clearly below car bursts across A--D.
+
 \section{Key takeaways}
 \begin{itemize}[leftmargin=*,itemsep=2pt]
-  \item Sound2Hap A-D stay as ports of the official scripts. We change context filtering, stitching, and level shaping instead of rewriting the algorithms.
+  \item Sound2Hap A--D stay as ports of the official scripts. We change context filtering, stitching, and level shaping instead of rewriting the algorithms.
   \item Finding event times alone is not enough, because vibration that only fires on detected events feels sparse next to a dense hand-made reference. Quiet continuous vibration (bed) plus stronger short hits (accents) is needed for thunder and rumble.
-  \item How many real events we find (detection recall) on annotated tank footage is still incomplete (missed cannons). Better denseness does not replace better detection.
+  \item Window tagging is too coarse for volleys. Frame-level SED plus flux refine/promote is the detector; video is parked until the visual model actually speaks acoustic categories.
+  \item A mixed clip cannot share one loudness floor. Measure rumble per scene, then decide steady vs rhythmic from repeated gaps, not from percentiles alone.
+  \item Rumble power and rhythm live in the renderer: do not flatten dynamics, do not peak-normalize every span, do not let one bang ring into the next.
+  \item Grading marks must be for \emph{this} clip and must not feed the detector. Empty marks mean nothing to score; a miss with nothing in \texttt{sustained\_gate.dropped} means the classifier never proposed it.
 \end{itemize}
 
 \end{document}

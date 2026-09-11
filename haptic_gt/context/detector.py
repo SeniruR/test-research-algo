@@ -17,6 +17,10 @@ from haptic_gt.context.mask import (
 )
 from haptic_gt.context.onset_refine import refine_event_timing
 from haptic_gt.context.proposals import propose_all_windows
+from haptic_gt.context.impulsive_nms import (
+    measure_impulsive_attacks,
+    suppress_impulsive_overlaps,
+)
 from haptic_gt.context.impulsive_promote import promote_impulsive_transients
 from haptic_gt.context.rumble_filter import filter_sustained_rumble_bursts
 from haptic_gt.context.sed_events import (
@@ -62,24 +66,29 @@ class EventResult:
 
         event_rows = []
         for i, e in enumerate(self.events, start=1):
-            event_rows.append(
-                {
-                    "event_id": f"event_{i:03d}",
-                    "category": e.category,
-                    "label": e.label,
-                    "start_sec": round(e.start_sec, 3),
-                    "peak_sec": round(e.peak_sec, 3),
-                    "end_sec": round(e.end_sec, 3),
-                    "confidence": round(e.confidence, 4),
-                    "context_token": e.context_token,
-                    "audio_score": e.audio_score,
-                    "video_score": e.video_score,
-                    "sources": e.sources,
-                    "included_in_gate": event_included_in_gate(
-                        e, taxonomy, gate_categories=gate_cats
-                    ),
-                }
-            )
+            row = {
+                "event_id": f"event_{i:03d}",
+                "category": e.category,
+                "label": e.label,
+                "start_sec": round(e.start_sec, 3),
+                "peak_sec": round(e.peak_sec, 3),
+                "end_sec": round(e.end_sec, 3),
+                "confidence": round(e.confidence, 4),
+                "context_token": e.context_token,
+                "audio_score": e.audio_score,
+                "video_score": e.video_score,
+                "sources": e.sources,
+                "included_in_gate": event_included_in_gate(
+                    e, taxonomy, gate_categories=gate_cats
+                ),
+            }
+            # Frame posteriors report the decode threshold for every promoted
+            # shot, so strength has to be read off the attack instead.
+            if e.attack_rel_max is not None:
+                row["attack_rel_max"] = e.attack_rel_max
+            if e.attack_prominence is not None:
+                row["attack_prominence"] = e.attack_prominence
+            event_rows.append(row)
 
         haptic_out = {
             key: _rel(val) for key, val in self.haptic_outputs.items() if val
@@ -171,8 +180,13 @@ def detect_events(
     events = promote_impulsive_transients(
         events, source_wav, encoder_scores, taxonomy
     )
-    events = refine_event_timing(events, source_wav, taxonomy)
+    # Peaks are on attacks now; only the spans need rebuilding around them
+    events = refine_event_timing(
+        events, source_wav, taxonomy, relocate_impulsive_peaks=False
+    )
     events = dedupe_events_by_peak(events)
+    # One accent per blast: a shot plus a bump in its own decay is one bang
+    events = suppress_impulsive_overlaps(events, source_wav, taxonomy)
     # Collapse fragmented vehicle chips into longer rumble spans
     events = merge_sustained_events(events, taxonomy)
     # Keep loud rumble islands; do not re-merge (that glues bursts across quiet gaps)
@@ -206,6 +220,7 @@ def _finalize(
     sustained_gate: dict | None = None,
 ) -> EventResult:
     """Build EventResult and write events.json / gated audio."""
+    events = measure_impulsive_attacks(events, source_wav, taxonomy)
     gate_events = events_for_haptic_gate(events, taxonomy, gate_categories=gate_cats)
     result = EventResult(
         events=events,
@@ -269,8 +284,13 @@ def _detect_via_frame_sed(
     events = refine_event_timing(events, source_wav, taxonomy)
     events = dedupe_events_by_peak(events)
     events = promote_impulsive_transients(events, source_wav, encoder_scores, taxonomy)
-    events = refine_event_timing(events, source_wav, taxonomy)
+    # Peaks are on attacks now; only the spans need rebuilding around them
+    events = refine_event_timing(
+        events, source_wav, taxonomy, relocate_impulsive_peaks=False
+    )
     events = dedupe_events_by_peak(events)
+    # One accent per blast: a shot plus a bump in its own decay is one bang
+    events = suppress_impulsive_overlaps(events, source_wav, taxonomy)
     events = merge_sustained_events(events, taxonomy)
     gate_report: dict = {}
     events = filter_sustained_rumble_bursts(

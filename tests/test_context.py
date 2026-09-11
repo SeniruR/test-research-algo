@@ -737,6 +737,153 @@ def test_debug_events_table():
     assert "15.000" in table
 
 
+def _shot_clip(sr: int = 22050, duration: float = 4.0, shots=((1.0, 1.0), (2.5, 0.8))):
+    t = np.arange(int(duration * sr), dtype=np.float32) / sr
+    rng = np.random.default_rng(3)
+    audio = (0.08 * np.sin(2 * np.pi * 50 * t)).astype(np.float32)
+    audio = audio + rng.standard_normal(t.size).astype(np.float32) * 0.05
+    for peak_t, amp in shots:
+        audio = audio + rng.standard_normal(t.size).astype(np.float32) * (
+            amp * np.exp(-((t - peak_t) ** 2) / (2 * 0.010**2))
+        )
+    return audio.astype(np.float32)
+
+
+def test_accents_closer_than_min_distance_collapse_to_the_stronger():
+    """One blast reported twice is one bang: the weaker report goes."""
+    import tempfile
+    from pathlib import Path
+
+    from haptic_gt.context.impulsive_nms import suppress_impulsive_overlaps
+
+    tax = load_taxonomy()
+    with tempfile.TemporaryDirectory() as td:
+        wav = Path(td) / "shots.wav"
+        sf.write(wav, _shot_clip(), 22050, subtype="PCM_16")
+        # 0.39 s apart, inside impulsive_min_peak_distance_sec
+        out = suppress_impulsive_overlaps(
+            [
+                DetectedEvent("explosion", "Explosion", 0.92, 1.00, 1.85, 0.30),
+                DetectedEvent("explosion", "Explosion", 1.31, 1.39, 1.90, 0.30),
+            ],
+            wav,
+            tax,
+        )
+
+    peaks = sorted(e.peak_sec for e in out)
+    assert len(peaks) == 1, peaks
+    assert abs(peaks[0] - 1.00) < 1e-6, peaks
+
+
+def test_accent_spans_are_trimmed_so_they_do_not_overlap():
+    """A decay tail must end before the next accent starts, or one bang blurs."""
+    import tempfile
+    from pathlib import Path
+
+    from haptic_gt.context.impulsive_nms import suppress_impulsive_overlaps
+
+    tax = load_taxonomy()
+    with tempfile.TemporaryDirectory() as td:
+        wav = Path(td) / "shots.wav"
+        sf.write(wav, _shot_clip(), 22050, subtype="PCM_16")
+        out = suppress_impulsive_overlaps(
+            [
+                DetectedEvent("explosion", "Explosion", 0.92, 1.00, 1.95, 0.30),
+                DetectedEvent("explosion", "Explosion", 2.42, 2.50, 3.20, 0.30),
+            ],
+            wav,
+            tax,
+        )
+
+    shots = sorted(out, key=lambda e: e.peak_sec)
+    assert len(shots) == 2, shots
+    assert shots[0].end_sec <= shots[1].start_sec + 1e-6, (shots[0], shots[1])
+    assert shots[0].end_sec > shots[0].peak_sec
+
+
+def test_rumble_bed_survives_a_shot_fired_inside_it():
+    """Vibration must not cut out the moment the cannon fires.
+
+    A short sustained chip sitting on a blast is that blast mislabelled and is
+    dropped; a long engine bed that merely happens to peak under one shot is the
+    engine, and it keeps running.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+
+    tax = load_taxonomy()
+    scores = [
+        EncoderScore(time_sec=float(t), label="Explosion", score=0.5, source="audio")
+        for t in np.arange(0.4, 3.6, 0.2)
+    ]
+    with tempfile.TemporaryDirectory() as td:
+        wav = Path(td) / "shots.wav"
+        sf.write(wav, _shot_clip(), 22050, subtype="PCM_16")
+        out = promote_impulsive_transients(
+            [DetectedEvent("vehicle", "Vehicle", 0.05, 1.02, 3.95, 0.6)],
+            wav,
+            scores,
+            tax,
+        )
+
+    vehicle = [e for e in out if e.category == "vehicle"]
+    assert vehicle, [e.category for e in out]
+    assert vehicle[0].end_sec - vehicle[0].start_sec > 3.0
+    assert any(e.category in ("explosion", "gunshot") for e in out), out
+
+
+def test_refine_keeps_peaks_when_relocation_is_off():
+    """Rebuilding spans must not walk a peak off the attack it is already on."""
+    import tempfile
+    from pathlib import Path
+
+    tax = load_taxonomy()
+    with tempfile.TemporaryDirectory() as td:
+        wav = Path(td) / "shots.wav"
+        sf.write(wav, _shot_clip(), 22050, subtype="PCM_16")
+        events = [DetectedEvent("explosion", "Explosion", 2.42, 2.50, 2.95, 0.30)]
+        kept = refine_event_timing(events, wav, tax, relocate_impulsive_peaks=False)
+        moved = refine_event_timing(events, wav, tax)
+
+    assert kept[0].peak_sec == 2.50
+    # Relocation would otherwise reach back to the louder shot at 1.0 s
+    assert moved[0].peak_sec < 2.50
+    assert kept[0].end_sec > kept[0].peak_sec
+
+
+def test_events_json_reports_attack_strength():
+    """Flat posteriors hide which bang was loud; the attack numbers must show it."""
+    import tempfile
+    from pathlib import Path
+
+    from haptic_gt.context.detector import EventResult
+    from haptic_gt.context.impulsive_nms import measure_impulsive_attacks
+
+    tax = load_taxonomy()
+    with tempfile.TemporaryDirectory() as td:
+        wav = Path(td) / "shots.wav"
+        sf.write(wav, _shot_clip(), 22050, subtype="PCM_16")
+        events = measure_impulsive_attacks(
+            [
+                DetectedEvent("explosion", "Explosion", 0.92, 1.00, 1.45, 0.30),
+                DetectedEvent("explosion", "Explosion", 2.42, 2.50, 2.95, 0.30),
+                DetectedEvent("vehicle", "Vehicle", 0.05, 2.00, 3.95, 0.60),
+            ],
+            wav,
+            tax,
+        )
+
+    rows = EventResult(events=events).to_dict()["events"]
+    shots = [r for r in rows if r["category"] == "explosion"]
+    assert all(r["confidence"] == 0.30 for r in shots)
+    # Same confidence, and the loudest bang still reads as the loudest
+    assert shots[0]["attack_rel_max"] > shots[1]["attack_rel_max"], shots
+    assert all(r["attack_prominence"] > 2.0 for r in shots), shots
+    assert "attack_rel_max" not in [r for r in rows if r["category"] == "vehicle"][0]
+
+
 if __name__ == "__main__":
     test_taxonomy_mapping()
     test_event_mask()

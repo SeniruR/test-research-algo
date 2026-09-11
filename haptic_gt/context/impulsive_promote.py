@@ -17,10 +17,14 @@ from haptic_gt.context.taxonomy import Taxonomy, load_taxonomy, match_label_to_c
 _CONFIRMED_CONF = 0.55
 # When no confirmed shot exists, treat this fraction of clip max flux as the level
 _FALLBACK_REF = 0.35
-# Nearby AST explosion/gunshot score required to promote
+# Nearby AST explosion/gunshot score required to promote. Model backing lowers
+# the level a shot must reach, not the rise: the score comes from a window about
+# a second wide, so it reads "explosion" all the way through a blast's ring-out
+# and cannot say whether this particular moment is a new bang or the old one
+# still fading. Sharpness has to answer that on its own.
 _PROMOTE_AST_FLOOR = 0.20
 _AST_REF_FRAC = 0.22
-_AST_PROMINENCE = 2.2
+_AST_PROMINENCE = 4.0
 # No AST support: must look like the confirmed shots
 _FLUX_ONLY_REF_FRAC = 0.60
 _FLUX_ONLY_PROMINENCE = 4.0
@@ -35,10 +39,22 @@ _ANCHOR_REL_MAX = 0.50
 _ANCHOR_PROMINENCE = 4.0
 # Inside a volley the decay of the previous blast inflates the pre-attack
 # baseline, so prominence collapses on shots that are plainly loud. Near an
-# anchor, lean on absolute level instead.
+# anchor, lean on absolute level instead -- but not on level alone: a blast's own
+# ring-out holds bumps at 0.47-0.65 of the shot that made them, which is as loud
+# as a real shot and would fire a second accent into the first bang's tail. The
+# bar sits above the loudest such bump (2.9x) and below the weakest real blast
+# (4.0x) measured on a tank clip.
 _VOLLEY_WINDOW_SEC = 2.0
 _VOLLEY_REF_FRAC = 0.50
-_VOLLEY_PROMINENCE = 1.3
+_VOLLEY_PROMINENCE = 3.2
+
+# A shell landing away from the volley is quieter than the cannon firing next to
+# the camera, so it never reaches the flux-only level gate -- but it is far
+# sharper than anything the drive makes. Measured on a tank clip: the two visible
+# impacts rose 5.8x and 9.1x over the moment before them, while every track clank
+# stayed under 3.0x, so sharpness separates them where level cannot.
+_IMPACT_PROMINENCE = 4.0
+_IMPACT_REF_FRAC = 0.40
 
 
 def _flux_at(times: np.ndarray, flux: np.ndarray, peak_t: float) -> float:
@@ -191,7 +207,12 @@ def promote_impulsive_transients(
         # With AST backing a quieter volley shot is enough; without it the peak
         # must look like the confirmed shots, not like a track clank.
         in_volley = any(abs(peak_t - a) <= _VOLLEY_WINDOW_SEC for a in anchors)
-        if in_volley and v >= _VOLLEY_REF_FRAC * ref_flux:
+        sharp_impact = (
+            prominence >= _IMPACT_PROMINENCE and v >= _IMPACT_REF_FRAC * ref_flux
+        )
+        if sharp_impact:
+            ok = True
+        elif in_volley and v >= _VOLLEY_REF_FRAC * ref_flux:
             ok = prominence >= _VOLLEY_PROMINENCE
         elif has_nearby:
             ok = v >= _AST_REF_FRAC * ref_flux and prominence >= _AST_PROMINENCE
@@ -232,7 +253,12 @@ def promote_impulsive_transients(
 
     kept: list[DetectedEvent] = list(new_events)
     for ev in surviving:
-        if not _impulsive(ev):
+        # A short sustained chip sitting on a blast is that blast mislabelled, so
+        # it goes. A rumble bed that merely happens to peak under one shot is the
+        # engine, and dropping it would stop the vibration the moment the cannon
+        # fires -- length is what tells them apart.
+        short_chip = (ev.end_sec - ev.start_sec) <= taxonomy.sustained_max_gate_sec
+        if not _impulsive(ev) and short_chip:
             if any(abs(ev.peak_sec - imp.peak_sec) <= 0.35 for imp in new_events):
                 continue
             if any(

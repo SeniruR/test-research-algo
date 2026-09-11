@@ -12,6 +12,19 @@ output/
 # Colab / IDE
 .ipynb_checkpoints/
 .DS_Store
+.cursor/
+
+# Node (draw.io MCP vendor)
+node_modules/
+
+# Local MCP clones — see tools/*-README.md
+tools/colab-mcp/
+
+# Scratch: Colab file-transfer chunks, MCP logs, one-off probes
+scripts/_colab_vid/
+scripts/_colab_xfer/
+scripts/_drawio_mcp_*.txt
+scripts/_nb_size.py
 
 papers/
 sample start for main flow/

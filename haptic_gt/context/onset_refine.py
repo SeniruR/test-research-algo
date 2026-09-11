@@ -263,12 +263,20 @@ def refine_event_timing(
     events: list[DetectedEvent],
     source_wav: str | Path,
     taxonomy: Taxonomy | None = None,
+    *,
+    relocate_impulsive_peaks: bool = True,
 ) -> list[DetectedEvent]:
     """
     Snap classifier window centers to acoustic onsets and fix gate spans.
 
     Impulsive: spectral-flux onset; short pre-roll + decay tail.
     Sustained: RMS peak; span capped for gating metadata.
+
+    Set ``relocate_impulsive_peaks`` false to rebuild spans around peaks that are
+    already on an attack. Searching again would walk them off it: the window is
+    wider than a shot's decay, so on a volley the earliest-comparable rule
+    reaches back into the previous blast's tail and two accents collapse onto one
+    moment -- and the moment it lands on was never checked for sharpness.
     """
     taxonomy = taxonomy or load_taxonomy()
     source_wav = Path(source_wav)
@@ -291,8 +299,12 @@ def refine_event_timing(
         impulsive = bool(cat_cfg and cat_cfg.impulsive)
 
         if impulsive:
-            acoustic_peak = _find_impulsive_peak(
-                audio, sr, ev.peak_sec, taxonomy, duration_sec=duration_sec
+            acoustic_peak = (
+                _find_impulsive_peak(
+                    audio, sr, ev.peak_sec, taxonomy, duration_sec=duration_sec
+                )
+                if relocate_impulsive_peaks
+                else ev.peak_sec
             )
         else:
             acoustic_peak = _find_acoustic_peak(audio, sr, ev.peak_sec, radius)

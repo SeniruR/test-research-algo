@@ -64,15 +64,23 @@ print("Download the ZIP at the end — Colab deletes /content when the session e
 """
 
 CELL_UPLOAD = """\
-from google.colab import files
 from pathlib import Path
 from IPython.display import Audio, display
-from haptic_gt.pipeline import generate_candidate_tracks
 
-print("Choose a video file to upload...")
-uploaded = files.upload()
-video_name = next(iter(uploaded))
-video_path = Path("/content") / video_name
+candidates = []
+for folder in (Path("/content"), Path("/content/haptic-workspace/input")):
+    if folder.exists():
+        candidates.extend(sorted(folder.glob("*.mp4")))
+        candidates.extend(sorted(folder.glob("*.mkv")))
+        candidates.extend(sorted(folder.glob("*.webm")))
+# Prefer a clip already on the runtime so Run All does not wait on a file picker.
+video_path = next((p for p in candidates if p.is_file()), None)
+if video_path is None:
+    from google.colab import files
+    print("Choose a video file to upload...")
+    uploaded = files.upload()
+    video_name = next(iter(uploaded))
+    video_path = Path("/content") / video_name
 
 print("Using video:", video_path)
 print("Output folder:", OUTPUT_DIR)

@@ -1,0 +1,8 @@
+{
+  "name": "drawio-mcp-local",
+  "private": true,
+  "description": "Local install of drawio-mcp so the MCP server can run on Node 22+ without npx.",
+  "scripts": {
+    "postinstall": "node patch-jsdom.mjs"
+  },
+}

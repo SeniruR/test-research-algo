@@ -332,6 +332,73 @@ def test_volley_shot_in_a_decay_tail_is_still_found():
     assert not [p for p in peaks if p < 9.2], peaks
 
 
+def _blast_with_broadband_tail(sr: int, duration: float, second_shot: bool):
+    """One cannon over an engine bed, ringing out into broadband wash.
+
+    A blast does not decay into a clean hum, it decays into noise, so spectral
+    flux stays high for most of a second and breaks into dozens of bumps. Tuned
+    to the geometry measured on a real tank clip: the wash reaches 0.25-0.31 of
+    the blast that made it while rising only 1.3-4.0x above the moment before it,
+    where real shots in that clip rose 4.0-9.1x. ``second_shot`` adds a genuine
+    cannon inside the wash, which stays sharp despite it.
+    """
+    t = np.arange(int(duration * sr), dtype=np.float32) / sr
+    rng = np.random.default_rng(11)
+    audio = (0.06 * np.sin(2 * np.pi * 48 * t)).astype(np.float32)
+    audio = audio + rng.standard_normal(t.size).astype(np.float32) * 0.10
+
+    audio = audio + rng.standard_normal(t.size).astype(np.float32) * (
+        1.0 * np.exp(-((t - 1.0) ** 2) / (2 * 0.010**2))
+    )
+    for center in np.arange(1.04, 1.98, 0.045):
+        amp = 0.30 * float(np.exp(-(center - 1.0) / 1.2)) * (0.7 + 0.6 * rng.random())
+        audio = audio + rng.standard_normal(t.size).astype(np.float32) * (
+            amp * np.exp(-((t - center) ** 2) / (2 * 0.030**2))
+        )
+
+    if second_shot:
+        audio = audio + rng.standard_normal(t.size).astype(np.float32) * (
+            0.9 * np.exp(-((t - 1.6) ** 2) / (2 * 0.010**2))
+        )
+    return audio.astype(np.float32)
+
+
+def _promote_on(audio, sr: int):
+    import tempfile
+    from pathlib import Path
+
+    import soundfile as sf
+
+    from haptic_gt.context.encoders import EncoderScore
+    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+
+    scores = [
+        EncoderScore(time_sec=float(t), label="Explosion", score=0.45, source="audio")
+        for t in np.arange(0.5, 2.5, 0.1)
+    ]
+    with tempfile.TemporaryDirectory() as td:
+        wav = Path(td) / "clip.wav"
+        sf.write(wav, audio, sr, subtype="PCM_16")
+        out = promote_impulsive_transients([], wav, scores, load_taxonomy())
+    return sorted(e.peak_sec for e in out if e.category in ("explosion", "gunshot"))
+
+
+def test_blast_ring_out_does_not_become_a_second_bang():
+    """A blast's own wash is as loud as a shot, but nothing was struck in it."""
+    sr = 22050
+    peaks = _promote_on(_blast_with_broadband_tail(sr, 3.0, second_shot=False), sr)
+    assert any(abs(p - 1.0) <= 0.06 for p in peaks), peaks
+    assert not [p for p in peaks if 1.05 <= p <= 1.98], peaks
+
+
+def test_second_cannon_inside_the_ring_out_is_still_a_bang():
+    """Tightening against wash must not cost a real shot fired into the tail."""
+    sr = 22050
+    peaks = _promote_on(_blast_with_broadband_tail(sr, 3.0, second_shot=True), sr)
+    assert any(abs(p - 1.0) <= 0.06 for p in peaks), peaks
+    assert any(abs(p - 1.6) <= 0.08 for p in peaks), peaks
+
+
 def test_quieter_camera_angle_stays_part_of_the_same_rumble():
     """A scene cut to a wider shot halves the level while the tank keeps rolling.
 
