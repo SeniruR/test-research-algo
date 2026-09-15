@@ -4,7 +4,12 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+.pytest_cache/
 output/
+test_out/
+test_output/
+test_output_s2h/
+texput.log
 *.wav
 *.mp4
 *.mov
