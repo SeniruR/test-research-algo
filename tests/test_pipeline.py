@@ -672,6 +672,8 @@ def test_pipeline_skips_haptics_when_no_gate_events():
 
         assert tracks.algorithm_a is None
         assert tracks.no_haptic_events is True
+        assert tracks.algorithm_e is not None
+        assert tracks.algorithm_e.exists()
 
 
 def test_gate_report_names_the_scenes_and_the_spans_it_dropped():
@@ -917,6 +919,7 @@ def test_volley_accents_do_not_ring_into_each_other():
 
 def test_output_names_layout():
     assert OUTPUT_NAMES["algorithm_a_perception_mapping"].endswith(".wav")
+    assert OUTPUT_NAMES["algorithm_e_rule_based"] == "algorithm_e_rule_based.wav"
     assert OUTPUT_NAMES["gated_audio"] == "gated_audio.wav"
 
 

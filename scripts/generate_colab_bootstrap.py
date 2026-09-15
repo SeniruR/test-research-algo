@@ -152,9 +152,18 @@ for name, path in saved.items():
     if not ok:
         missing.append(name)
 
+sound2hap_keys = [
+    "algorithm_a_perception_mapping",
+    "algorithm_b_frequency_shifting",
+    "algorithm_c_pitch_matching",
+    "algorithm_d_haptic_gen",
+]
 if tracks.no_haptic_events:
-    print("No gate-eligible events — haptic WAVs skipped (see events.json).")
-elif missing:
+    print("No gate-eligible events — Sound2Hap A–D skipped (see events.json). Rule-based E still ran.")
+    missing = [name for name in missing if name not in sound2hap_keys]
+if "algorithm_e_rule_based" not in saved:
+    missing.append("algorithm_e_rule_based")
+if missing:
     raise RuntimeError(
         "Generation incomplete — missing outputs: "
         + ", ".join(missing)
@@ -485,6 +494,7 @@ labels = {
     "algorithm_b_frequency_shifting": "B — Frequency shifting",
     "algorithm_c_pitch_matching": "C — Pitch matching",
     "algorithm_d_haptic_gen": "D — HapticGen",
+    "algorithm_e_rule_based": "E — Rule-based (video + RMS)",
 }
 
 paths = {}
@@ -532,13 +542,13 @@ print("Download started.")
 MARKDOWN_INTRO = """\
 # Haptic Ground Truth — Colab Pipeline
 
-Same four algorithms as **[Sound2Hap](https://github.com/Iris1215/Sound2Hap)** (CHI 2026), with **frozen multimodal context detection** before haptic synthesis.
+Same four Sound2Hap algorithms plus **E**, the original rule-based thunder/rain/RMS mapper.
 
 Convert **3–5 minute** video into **gated candidate haptic tracks** for human-in-the-loop evaluation.
 
-**Runtime:** **T4 GPU** recommended for context detection (AST + ViViT). Sound2Hap A–D can run on CPU.
+**Runtime:** **T4 GPU** recommended for context detection (AST + ViViT). Sound2Hap A–D and rule-based E can run on CPU.
 
-**Output:** mono **8 kHz** haptic WAV files + `events.json`
+**Output:** mono **8 kHz** haptic WAV files + `events.json` + `algorithm_e_rule_based.json`
 
 **Setup:** Run all cells top-to-bottom. Upload a video when prompted — no Google Drive needed.
 
@@ -546,14 +556,15 @@ Convert **3–5 minute** video into **gated candidate haptic tracks** for human-
 |-------|-----------|
 | **1** | Tokenization (100Hz) + Frozen Context Detectors + AST/ViViT encoders |
 | **2** | Frozen fusion → `events.json` → gated audio |
-| **3** | Sound2Hap A–D |\
+| **3** | Sound2Hap A–D |
+| **4** | Rule-based E (ungated video + audio RMS) |\
 """
 
 MARKDOWN_HITL = """\
 ## Human-in-the-loop (next step)
 
 1. Play **source audio** (44.1 kHz) in headphones while feeling each **8 kHz** candidate on haptic hardware.
-2. Rate **realism** and **similarity** (e.g. 1–7 Likert) per algorithm — same protocol as [Sound2Hap](https://sound2hap.netlify.app/).
+2. Compare **E** (rule-based) against Sound2Hap **A–D**. Rate **realism** and **similarity** (e.g. 1–7 Likert).
 3. If agreement < threshold, tune parameters in `haptic_gt/algorithms/*.py` and re-run.
 4. Approved tracks become your **ground truth dataset**.\
 """

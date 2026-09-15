@@ -75,6 +75,111 @@ class _Attacks:
         )
 
 
+#: Decay bumps sit 0.2-0.4 s after a muzzle; this is the window in which there
+#: is only one bang. Prefer the earliest sharp attack that is still loud enough
+#: (muzzle), not the absolute loudest bin (often a boom 0.2-0.3 s later).
+_SNAP_PROMINENCE = 3.0
+_SNAP_EARLIEST_FRAC = 0.65
+
+
+def _local_max_indices(flux: np.ndarray) -> np.ndarray:
+    if flux.size < 3:
+        return np.array([], dtype=int)
+    return np.flatnonzero((flux[1:-1] >= flux[:-2]) & (flux[1:-1] >= flux[2:])) + 1
+
+
+def snap_impulsive_peaks_to_attacks(
+    events: list[DetectedEvent],
+    source_wav: str | Path,
+    taxonomy: Taxonomy | None = None,
+) -> list[DetectedEvent]:
+    """Move each impulsive peak onto the muzzle in its own spacing window.
+
+    Frame SED and the first refine pass often land 0.2-0.4 s late, on a bump in
+    the blast's own decay. Promote then skips the real attack because it is
+    inside the 0.40 s neighbour gate, so the haptic accent fires on the tail.
+    Inside ``impulsive_min_peak_distance_sec`` there is only one bang: pick the
+    earliest sharp attack that is still ≥65% of the loudest sharp peak in that
+    window (prominence ≥ 3.0). Loudest-alone was landing on the boom after the
+    muzzle and making the first haptic feel late.
+    """
+    taxonomy = taxonomy or load_taxonomy()
+    if not any(_is_impulsive(e, taxonomy) for e in events):
+        return list(events)
+
+    attacks = _Attacks(Path(source_wav), taxonomy)
+    if attacks.flux.size < 3:
+        return list(events)
+
+    radius = taxonomy.impulsive_min_peak_distance_sec
+    pre_roll = taxonomy.impulsive_pre_roll_sec
+    half = taxonomy.impulsive_event_half_width_sec
+    peak_idxs = _local_max_indices(attacks.flux)
+
+    out: list[DetectedEvent] = []
+    for ev in events:
+        if not _is_impulsive(ev, taxonomy):
+            out.append(ev)
+            continue
+        best_t = _best_sharp_attack(
+            attacks, peak_idxs, ev.peak_sec, radius=radius
+        )
+        if best_t is None or abs(best_t - ev.peak_sec) < 1e-4:
+            out.append(ev)
+            continue
+        sources = list(ev.sources)
+        if "flux_snap" not in sources:
+            sources.append("flux_snap")
+        start = max(0.0, best_t - pre_roll)
+        end = min(attacks.duration_sec, max(ev.end_sec, best_t + half))
+        out.append(
+            DetectedEvent(
+                category=ev.category,
+                label=ev.label,
+                start_sec=start,
+                peak_sec=best_t,
+                end_sec=max(end, start + 0.2),
+                confidence=ev.confidence,
+                context_token=ev.context_token,
+                audio_score=ev.audio_score,
+                video_score=ev.video_score,
+                sources=sources,
+                attack_rel_max=ev.attack_rel_max,
+                attack_prominence=ev.attack_prominence,
+            )
+        )
+    return out
+
+
+def _best_sharp_attack(
+    attacks: _Attacks,
+    peak_idxs: np.ndarray,
+    t: float,
+    *,
+    radius: float,
+) -> float | None:
+    """Earliest adequate sharp local maximum within ``radius`` of ``t``."""
+    if peak_idxs.size == 0:
+        return None
+    nearby = peak_idxs[np.abs(attacks.times[peak_idxs] - t) <= radius]
+    if nearby.size == 0:
+        return None
+    scored: list[tuple[float, float, float]] = []
+    for idx in nearby:
+        peak_t = float(attacks.times[idx])
+        promin = local_flux_ratio(attacks.times, attacks.flux, peak_t)
+        if promin < _SNAP_PROMINENCE:
+            continue
+        scored.append((float(attacks.flux[idx]), promin, peak_t))
+    if not scored:
+        return None
+    loudest = max(row[0] for row in scored)
+    floor = _SNAP_EARLIEST_FRAC * loudest
+    adequate = [row for row in scored if row[0] >= floor]
+    adequate.sort(key=lambda row: row[2])
+    return adequate[0][2]
+
+
 def _is_impulsive(ev: DetectedEvent, taxonomy: Taxonomy) -> bool:
     cfg = taxonomy.categories.get(ev.category)
     return bool(cfg is not None and cfg.impulsive)

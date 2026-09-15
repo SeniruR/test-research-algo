@@ -110,6 +110,18 @@ sed_merge_gap_sec: 0.20
 # Splitting a volley: a shot peak must reach this fraction of the span's strongest
 sed_peak_rel: 0.60
 
+# --- Picture flashes (not ViViT) --------------------------------------------
+# Audio peaks on this clip often sit on a boom or a cut, while the fireball is
+# a different frame. Orange-pixel onsets snap gunshot/explosion peaks onto the
+# picture and add flashes the soundtrack missed. Audio bangs with no flash are
+# kept (do not drop off-screen / low-orange fires).
+visual_flash_enabled: true
+visual_flash_min_d_warm: 0.025
+visual_flash_min_warm: 0.025
+visual_flash_min_d_hot: -0.005
+visual_flash_match_sec: 0.50
+visual_flash_min_sep_sec: 0.45
+
 # --- Video branch -----------------------------------------------------------
 # Disabled on purpose. ViViT is Kinetics-400 (human actions: "driving car",
 # "exploding firecrackers"), which does not cover explosion / engine rumble as

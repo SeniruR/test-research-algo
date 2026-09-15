@@ -35,7 +35,7 @@ _DEMOTE_REF_FRAC = 0.18
 # Confidence scales differ per backend (AST window scores run high, PANNs frame
 # posteriors low), so a fixed 0.55 silently fails on some backends and leaves the
 # shot level guessed from clip max -- which puts track clanks near "shot loud".
-_ANCHOR_REL_MAX = 0.50
+_ANCHOR_REL_MAX = 0.40
 _ANCHOR_PROMINENCE = 4.0
 # Inside a volley the decay of the previous blast inflates the pre-attack
 # baseline, so prominence collapses on shots that are plainly loud. Near an
@@ -46,15 +46,16 @@ _ANCHOR_PROMINENCE = 4.0
 # (4.0x) measured on a tank clip.
 _VOLLEY_WINDOW_SEC = 2.0
 _VOLLEY_REF_FRAC = 0.50
-_VOLLEY_PROMINENCE = 3.2
+_VOLLEY_PROMINENCE = 3.0
 
 # A shell landing away from the volley is quieter than the cannon firing next to
 # the camera, so it never reaches the flux-only level gate -- but it is far
-# sharper than anything the drive makes. Measured on a tank clip: the two visible
-# impacts rose 5.8x and 9.1x over the moment before them, while every track clank
-# stayed under 3.0x, so sharpness separates them where level cannot.
-_IMPACT_PROMINENCE = 4.0
+# sharper than anything the drive makes. Supported impacts (AST / in-volley) may
+# sit near 3x; isolated flux-only spikes need a much higher bar so end-of-clip
+# SFX does not become a phantom fire.
+_IMPACT_PROMINENCE = 3.0
 _IMPACT_REF_FRAC = 0.40
+_ISOLATED_IMPACT_PROMINENCE = 6.0
 
 
 def _flux_at(times: np.ndarray, flux: np.ndarray, peak_t: float) -> float:
@@ -206,11 +207,21 @@ def promote_impulsive_transients(
         has_nearby = best is not None and best[2] >= _PROMOTE_AST_FLOOR
         # With AST backing a quieter volley shot is enough; without it the peak
         # must look like the confirmed shots, not like a track clank.
-        in_volley = any(abs(peak_t - a) <= _VOLLEY_WINDOW_SEC for a in anchors)
+        in_volley = any(
+            0.05 < abs(peak_t - a) <= _VOLLEY_WINDOW_SEC for a in anchors
+        )
+        # Flux-only fills gaps near SED/fusion events, not phantom end-of-clip SFX.
+        near_seed = any(
+            abs(peak_t - e.peak_sec) <= _VOLLEY_WINDOW_SEC
+            for e in surviving
+            if _impulsive(e)
+        )
         sharp_impact = (
             prominence >= _IMPACT_PROMINENCE and v >= _IMPACT_REF_FRAC * ref_flux
         )
-        if sharp_impact:
+        if sharp_impact and (has_nearby or in_volley):
+            ok = True
+        elif sharp_impact and prominence >= _ISOLATED_IMPACT_PROMINENCE:
             ok = True
         elif in_volley and v >= _VOLLEY_REF_FRAC * ref_flux:
             ok = prominence >= _VOLLEY_PROMINENCE
@@ -219,6 +230,7 @@ def promote_impulsive_transients(
         else:
             ok = (
                 ref_confirmed
+                and near_seed
                 and clip_imp_score >= 0.35
                 and v >= _FLUX_ONLY_REF_FRAC * ref_flux
                 and prominence >= _FLUX_ONLY_PROMINENCE

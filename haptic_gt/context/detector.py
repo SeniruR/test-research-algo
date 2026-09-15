@@ -19,6 +19,7 @@ from haptic_gt.context.onset_refine import refine_event_timing
 from haptic_gt.context.proposals import propose_all_windows
 from haptic_gt.context.impulsive_nms import (
     measure_impulsive_attacks,
+    snap_impulsive_peaks_to_attacks,
     suppress_impulsive_overlaps,
 )
 from haptic_gt.context.impulsive_promote import promote_impulsive_transients
@@ -34,6 +35,7 @@ from haptic_gt.context.sed_frames import (
 from haptic_gt.context.sustained_merge import merge_sustained_events
 from haptic_gt.context.taxonomy import load_taxonomy
 from haptic_gt.context.tokenization import tokenize_video_audio
+from haptic_gt.context.visual_flash import align_impulsive_events_to_flashes
 
 EVENTS_JSON_NAME = "events.json"
 GATED_AUDIO_NAME = "gated_audio.wav"
@@ -140,6 +142,7 @@ def detect_events(
         return _detect_via_frame_sed(
             tokens_data=tokens_data,
             source_wav=source_wav,
+            video_path=video_path,
             taxonomy=taxonomy,
             gate_cats=gate_cats,
             output_dir=output_dir,
@@ -180,7 +183,12 @@ def detect_events(
     events = promote_impulsive_transients(
         events, source_wav, encoder_scores, taxonomy
     )
-    # Peaks are on attacks now; only the spans need rebuilding around them
+    # SED/refine often sit on a decay bump; snap back to the muzzle in-window
+    events = snap_impulsive_peaks_to_attacks(events, source_wav, taxonomy)
+    events = align_impulsive_events_to_flashes(events, video_path, taxonomy)
+    # Picture flash can lead the boom by ~0.2 s; snap again onto the sharp attack
+    events = snap_impulsive_peaks_to_attacks(events, source_wav, taxonomy)
+    # Peaks are on attacks/flashes now; only the spans need rebuilding around them
     events = refine_event_timing(
         events, source_wav, taxonomy, relocate_impulsive_peaks=False
     )
@@ -261,6 +269,7 @@ def _detect_via_frame_sed(
     *,
     tokens_data,
     source_wav: Path,
+    video_path: Path,
     taxonomy,
     gate_cats: list[str],
     output_dir: str | Path | None,
@@ -284,7 +293,12 @@ def _detect_via_frame_sed(
     events = refine_event_timing(events, source_wav, taxonomy)
     events = dedupe_events_by_peak(events)
     events = promote_impulsive_transients(events, source_wav, encoder_scores, taxonomy)
-    # Peaks are on attacks now; only the spans need rebuilding around them
+    # SED/refine often sit on a decay bump; snap back to the muzzle in-window
+    events = snap_impulsive_peaks_to_attacks(events, source_wav, taxonomy)
+    events = align_impulsive_events_to_flashes(events, video_path, taxonomy)
+    # Picture flash can lead the boom by ~0.2 s; snap again onto the sharp attack
+    events = snap_impulsive_peaks_to_attacks(events, source_wav, taxonomy)
+    # Peaks are on attacks/flashes now; only the spans need rebuilding around them
     events = refine_event_timing(
         events, source_wav, taxonomy, relocate_impulsive_peaks=False
     )

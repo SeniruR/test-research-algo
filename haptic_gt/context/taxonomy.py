@@ -93,6 +93,14 @@ class Taxonomy:
     sed_min_event_sec_sustained: float = 0.40
     sed_merge_gap_sec: float = 0.20
     sed_peak_rel: float = 0.60
+    # Orange/fireball onsets from pixels (not ViViT). Snaps impulsive peaks
+    # onto the picture so a montage cut or late boom does not fire off-screen.
+    visual_flash_enabled: bool = True
+    visual_flash_min_d_warm: float = 0.025
+    visual_flash_min_warm: float = 0.025
+    visual_flash_min_d_hot: float = -0.005
+    visual_flash_match_sec: float = 0.50
+    visual_flash_min_sep_sec: float = 0.45
     # Video fusion is off; see taxonomy.yaml for why
     use_video: bool = False
     categories: dict[str, CategoryConfig] = field(default_factory=dict)
@@ -220,6 +228,12 @@ def load_taxonomy(path: str | Path | None = None) -> Taxonomy:
         sed_min_event_sec_sustained=float(raw.get("sed_min_event_sec_sustained", 0.40)),
         sed_merge_gap_sec=float(raw.get("sed_merge_gap_sec", 0.20)),
         sed_peak_rel=float(raw.get("sed_peak_rel", 0.60)),
+        visual_flash_enabled=bool(raw.get("visual_flash_enabled", True)),
+        visual_flash_min_d_warm=float(raw.get("visual_flash_min_d_warm", 0.025)),
+        visual_flash_min_warm=float(raw.get("visual_flash_min_warm", 0.025)),
+        visual_flash_min_d_hot=float(raw.get("visual_flash_min_d_hot", -0.005)),
+        visual_flash_match_sec=float(raw.get("visual_flash_match_sec", 0.50)),
+        visual_flash_min_sep_sec=float(raw.get("visual_flash_min_sep_sec", 0.45)),
         use_video=bool(raw.get("use_video", False)),
         categories=categories,
     )

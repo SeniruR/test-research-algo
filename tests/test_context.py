@@ -749,6 +749,106 @@ def _shot_clip(sr: int = 22050, duration: float = 4.0, shots=((1.0, 1.0), (2.5, 
     return audio.astype(np.float32)
 
 
+def test_late_decay_report_snaps_to_the_muzzle():
+    """A peak 0.3 s into the ring-out must move back onto the attack.
+
+    That is the tank-clip failure: the loudest cannon is at 11.52 s but SED
+    reported 11.82 s, so the haptic accent landed on the tail.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from haptic_gt.context.impulsive_nms import snap_impulsive_peaks_to_attacks
+
+    tax = load_taxonomy()
+    sr = 22050
+    t = np.arange(int(4.0 * sr), dtype=np.float32) / sr
+    rng = np.random.default_rng(3)
+    audio = (0.08 * np.sin(2 * np.pi * 50 * t)).astype(np.float32)
+    audio = audio + rng.standard_normal(t.size).astype(np.float32) * 0.04
+    audio = audio + rng.standard_normal(t.size).astype(np.float32) * (
+        1.2 * np.exp(-((t - 1.00) ** 2) / (2 * 0.008**2))
+    )
+    audio = audio + rng.standard_normal(t.size).astype(np.float32) * (
+        0.55 * np.exp(-((t - 1.30) ** 2) / (2 * 0.020**2))
+    )
+    audio = audio + rng.standard_normal(t.size).astype(np.float32) * (
+        0.9 * np.exp(-((t - 2.55) ** 2) / (2 * 0.008**2))
+    )
+    with tempfile.TemporaryDirectory() as td:
+        wav = Path(td) / "shots.wav"
+        sf.write(wav, audio.astype(np.float32), sr, subtype="PCM_16")
+        out = snap_impulsive_peaks_to_attacks(
+            [
+                DetectedEvent("explosion", "Explosion", 1.22, 1.30, 1.95, 0.30),
+                DetectedEvent("explosion", "Explosion", 2.47, 2.55, 3.10, 0.30),
+            ],
+            wav,
+            tax,
+        )
+
+    peaks = sorted(e.peak_sec for e in out)
+    assert len(peaks) == 2, peaks
+    assert abs(peaks[0] - 1.00) < 0.04, peaks
+    assert abs(peaks[1] - 2.55) < 0.04, peaks
+
+
+def test_snap_prefers_earlier_muzzle_over_louder_boom():
+    """When muzzle and boom are one spacing window, keep the muzzle (earlier)."""
+    import tempfile
+    from pathlib import Path
+
+    from haptic_gt.context.impulsive_nms import snap_impulsive_peaks_to_attacks
+
+    tax = load_taxonomy()
+    sr = 22050
+    t = np.arange(int(3.0 * sr), dtype=np.float32) / sr
+    rng = np.random.default_rng(21)
+    audio = (0.05 * np.sin(2 * np.pi * 45 * t)).astype(np.float32)
+    # Earlier muzzle, slightly quieter; boom 0.28 s later is louder.
+    audio = audio + rng.standard_normal(t.size).astype(np.float32) * (
+        0.85 * np.exp(-((t - 1.00) ** 2) / (2 * 0.008**2))
+    )
+    audio = audio + rng.standard_normal(t.size).astype(np.float32) * (
+        1.15 * np.exp(-((t - 1.28) ** 2) / (2 * 0.010**2))
+    )
+    with tempfile.TemporaryDirectory() as td:
+        wav = Path(td) / "muzzle_boom.wav"
+        sf.write(wav, audio.astype(np.float32), sr, subtype="PCM_16")
+        out = snap_impulsive_peaks_to_attacks(
+            [DetectedEvent("explosion", "Explosion", 1.20, 1.28, 1.90, 0.30)],
+            wav,
+            tax,
+        )
+    assert abs(out[0].peak_sec - 1.00) < 0.05, out[0].peak_sec
+
+
+def test_snap_does_not_steal_the_previous_volley_shot():
+    """Shots 0.5 s apart must stay two accents, even if the later one is louder."""
+    import tempfile
+    from pathlib import Path
+
+    from haptic_gt.context.impulsive_nms import snap_impulsive_peaks_to_attacks
+
+    tax = load_taxonomy()
+    with tempfile.TemporaryDirectory() as td:
+        wav = Path(td) / "shots.wav"
+        sf.write(wav, _shot_clip(), 22050, subtype="PCM_16")
+        out = snap_impulsive_peaks_to_attacks(
+            [
+                DetectedEvent("explosion", "Explosion", 0.92, 1.00, 1.45, 0.30),
+                DetectedEvent("explosion", "Explosion", 2.42, 2.50, 2.95, 0.30),
+            ],
+            wav,
+            tax,
+        )
+
+    peaks = sorted(e.peak_sec for e in out)
+    assert len(peaks) == 2, peaks
+    assert abs(peaks[0] - 1.00) < 0.05, peaks
+    assert abs(peaks[1] - 2.50) < 0.05, peaks
+
+
 def test_accents_closer_than_min_distance_collapse_to_the_stronger():
     """One blast reported twice is one bang: the weaker report goes."""
     import tempfile
@@ -799,6 +899,60 @@ def test_accent_spans_are_trimmed_so_they_do_not_overlap():
     assert len(shots) == 2, shots
     assert shots[0].end_sec <= shots[1].start_sec + 1e-6, (shots[0], shots[1])
     assert shots[0].end_sec > shots[0].peak_sec
+
+
+def test_visual_flash_onsets_ignore_cuts_and_keep_orange_jumps():
+    from haptic_gt.context.visual_flash import flashes_from_frame_metrics
+
+    fps = 30.0
+    n = 90
+    times = np.arange(n, dtype=np.float64) / fps
+    warm = np.zeros(n, dtype=np.float64)
+    hot = np.zeros(n, dtype=np.float64)
+    # Cut to a bright sky: hot jumps, almost no orange.
+    hot[20:] = 0.30
+    # Real fireball at 1.5 s.
+    warm[45:] = 0.08
+    # Second fireball at 2.2 s.
+    warm[66:] = 0.12
+    flashes = flashes_from_frame_metrics(
+        times,
+        warm,
+        hot,
+        min_d_warm=0.025,
+        min_warm=0.025,
+        min_d_hot=-0.005,
+        min_sep_sec=0.45,
+    )
+    assert len(flashes) == 2, flashes
+    assert abs(flashes[0] - 1.5) < 0.04, flashes
+    assert abs(flashes[1] - 2.2) < 0.04, flashes
+
+
+def test_visual_flash_snaps_keeps_and_promotes():
+    from haptic_gt.context.visual_flash import align_impulsive_events_to_flashes
+
+    tax = load_taxonomy()
+    out = align_impulsive_events_to_flashes(
+        [
+            DetectedEvent("vehicle", "Vehicle", 0.1, 1.0, 5.0, 0.5),
+            DetectedEvent("explosion", "Explosion", 1.40, 1.48, 2.10, 0.3),
+            # No flash nearby — must still be kept (was wrongly dropped before).
+            DetectedEvent("explosion", "Explosion", 3.00, 3.08, 3.70, 0.3),
+        ],
+        taxonomy=tax,
+        flashes=[1.50, 2.20],
+    )
+    peaks = sorted(e.peak_sec for e in out if e.category == "explosion")
+    vehicle = [e for e in out if e.category == "vehicle"]
+    assert len(vehicle) == 1
+    # snapped 1.48→1.50, promoted 2.20, kept unmatched 3.08
+    assert len(peaks) == 3, peaks
+    assert abs(peaks[0] - 1.50) < 1e-6, peaks
+    assert abs(peaks[1] - 2.20) < 1e-6, peaks
+    assert abs(peaks[2] - 3.08) < 1e-6, peaks
+    flashed = [e for e in out if e.category == "explosion" and e.peak_sec < 3.0]
+    assert all("visual_flash" in e.sources for e in flashed)
 
 
 def test_rumble_bed_survives_a_shot_fired_inside_it():

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from typing import Any
 
-from haptic_gt.algorithms import freq_shift, haptic_gen, percept, pitch_match
+from haptic_gt.algorithms import freq_shift, haptic_gen, percept, pitch_match, rule_based
 from haptic_gt.audio_io import INPUT_SR, VIB_SR, extract_audio_from_video, prepare_source_wav
 from haptic_gt.context import detect_events
 from haptic_gt.context.detector import EVENTS_JSON_NAME, GATED_AUDIO_NAME, EventResult
@@ -45,18 +45,22 @@ OUTPUT_NAMES = {
     "algorithm_b_frequency_shifting": "algorithm_b_frequency_shifting.wav",
     "algorithm_c_pitch_matching": "algorithm_c_pitch_matching.wav",
     "algorithm_d_haptic_gen": "algorithm_d_haptic_gen.wav",
+    "algorithm_e_rule_based": "algorithm_e_rule_based.wav",
+    "algorithm_e_rule_based_json": "algorithm_e_rule_based.json",
 }
 
 
 @dataclass
 class CandidateTracks:
-    """Paths to source audio and four Sound2Hap candidate haptic tracks."""
+    """Paths to source audio, Sound2Hap A–D, and rule-based E."""
 
     source_wav: Path
     algorithm_a: Path | None
     algorithm_b: Path | None
     algorithm_c: Path | None
     algorithm_d: Path | None
+    algorithm_e: Path | None
+    algorithm_e_json: Path | None
     output_dir: Path
     haptic_input_wav: Path | None
     input_sample_rate: int = INPUT_SR
@@ -78,6 +82,10 @@ class CandidateTracks:
             out["algorithm_c_pitch_matching"] = self.algorithm_c
         if self.algorithm_d and self.algorithm_d.exists():
             out["algorithm_d_haptic_gen"] = self.algorithm_d
+        if self.algorithm_e and self.algorithm_e.exists():
+            out["algorithm_e_rule_based"] = self.algorithm_e
+        if self.algorithm_e_json and self.algorithm_e_json.exists():
+            out["algorithm_e_rule_based_json"] = self.algorithm_e_json
         if self.events_json and self.events_json.exists():
             out["events_json"] = self.events_json
         if (
@@ -117,11 +125,12 @@ def generate_candidate_tracks(
     manual_rumble_peaks: list[float] | None = None,
 ) -> CandidateTracks:
     """
-    Run context detection (optional) then Sound2Hap A–D.
+    Run context detection (optional), Sound2Hap A–D, and rule-based E.
 
-    When gate-eligible events are detected, haptics are stitched onto a full-length
-    timeline (one WAV per algorithm). When none match gate_categories, haptic
-    generation is skipped.
+    When gate-eligible events are detected, A–D are stitched onto a full-length
+    timeline (one WAV per algorithm). When none match gate_categories, A–D are
+    skipped. Rule-based E always runs on the ungated mix (plus video frames
+    when ``from_video`` is true).
 
     With `continuous_haptics` on, each algorithm also renders the full clip as a
     low-level continuous layer underneath the event accents, so sustained sounds
@@ -157,6 +166,8 @@ def generate_candidate_tracks(
     out_b = output_dir / OUTPUT_NAMES["algorithm_b_frequency_shifting"]
     out_c = output_dir / OUTPUT_NAMES["algorithm_c_pitch_matching"]
     out_d = output_dir / OUTPUT_NAMES["algorithm_d_haptic_gen"]
+    out_e = output_dir / OUTPUT_NAMES["algorithm_e_rule_based"]
+    out_e_json = output_dir / OUTPUT_NAMES["algorithm_e_rule_based_json"]
 
     if manual_events is not None:
         events = events_from_manual(manual_events, taxonomy)
@@ -307,12 +318,26 @@ def generate_candidate_tracks(
                 },
             )
 
+    rule_based.process_file(
+        source_wav,
+        out_e,
+        video_path=input_path if from_video else None,
+        json_path=out_e_json,
+    )
+    if events_json_path is not None:
+        _update_events_json_haptics(
+            events_json_path,
+            {"algorithm_e": OUTPUT_NAMES["algorithm_e_rule_based"]},
+        )
+
     return CandidateTracks(
         source_wav=source_wav,
         algorithm_a=out_a if gate_events else None,
         algorithm_b=out_b if gate_events else None,
         algorithm_c=out_c if gate_events else None,
         algorithm_d=out_d if gate_events else None,
+        algorithm_e=out_e,
+        algorithm_e_json=out_e_json,
         output_dir=output_dir,
         haptic_input_wav=haptic_input,
         pitch_match_info=pitch_info,
