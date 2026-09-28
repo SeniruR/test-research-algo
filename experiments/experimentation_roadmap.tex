@@ -37,10 +37,10 @@ Hard cases that keep driving the work:
 \begin{enumerate}[leftmargin=*,itemsep=2pt]
   \item Pull mono sound from the video (44.1\,kHz). Video classification is parked (\texttt{use\_video: false}).
   \item Frame-level sound event detection (SED): PANNs when installed, otherwise dense AST windows. Decode with median filter + hysteresis, then split volleys at posterior peaks.
-  \item Snap bangs to spectral-flux attacks. Promote missed shots from flux (anchor + volley rules). Demote rumble-like false bangs.
+  \item Snap bangs to the earliest sharp spectral-flux attack, then snap again onto the audio boom after a visual flash. A flash may add a bang. It may not drop an audio fire. Promote missed shots from flux (anchor + volley rules). Demote rumble-like false bangs.
   \item Gate vehicle rumble on loud RMS islands, with one loudness floor \emph{per scene} so a close car cannot hide a distant drive. Repeated quiet stretches are treated as rhythm (gaps stay quiet); one long quiet stretch is treated as a camera angle (kept).
   \item Write \texttt{events.json} (includes a \texttt{sustained\_gate} report: floor per scene, dropped spans) and \texttt{gated\_audio.wav}.
-  \item Run Sound2Hap A--D: quiet continuous vibration underneath (bed) plus stronger short hits on top (accents, 25\,ms lead, 45\,ms release between volley hits). Rumble spans follow source loudness and rhythm. The four algorithms themselves are unchanged.
+  \item Run Sound2Hap A--D: quiet continuous vibration underneath (bed) plus stronger short hits on top (accents, 25\,ms lead, 45\,ms release between volley hits). Rumble spans follow source loudness and rhythm. The four algorithms themselves are unchanged. On a phone motor with no amplitude control, Event-Trigger fires once per bang: a short spike, or a solid buzz through the peak then a coarse fade.
 \end{enumerate}
 
 Scoring (notebook, after generation): \texttt{TRUTH\_SHOT\_TIMES} / \texttt{TRUTH\_RUMBLE\_TIMES} are a grading key for this clip only. Shots get DCASE-style onset-collar F1; rumble gets span coverage. Empty lists mean ``nothing to score'', not a detector failure.
@@ -73,6 +73,8 @@ Scoring (notebook, after generation): \texttt{TRUTH\_SHOT\_TIMES} / \texttt{TRUT
   \item Place the accent slightly before the audio attack so a slow actuator is felt on time (accent lead).
   \item Taper the previous bang before the next lands, so a volley reads as separate hits (accent release).
   \item Phone code that turns WAV loudness into vibration strength (parser).
+  \item Orange jump in the picture used only to nudge a bang onto the flash (visual flash). An audio bang with no flash is kept.
+  \item Motor that is only on or off, so softness is made with time and pattern (no amplitude control).
 \end{itemize}
 
 \section{Experiments}
@@ -244,6 +246,52 @@ User clip: first $\sim$6--8\,s cannons, 10--18\,s tank drive, then car rumble.
 
 On the synthetic combined-clip fixture after the scene + rhythm + rendering changes: drive 10--18\,s as one span (100\% coverage), car as four bursts of 1.4--2.0\,s with silent gaps, drive RMS clearly below car bursts across A--D.
 
+\subsection*{Lining bangs up with the picture (war-tank clip)}
+The detector still finds start, peak, and end on its own. A tank clip was the check: several cannon fires, then a drive. Packs are numbered exports such as folder 35.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{What we tried} & \textbf{Outcome} & \textbf{Changed to / Continued?} \\
+\midrule
+Drop a bang that has no orange flash in the picture & Folder 33 kept only 3 fires. Shots near 10\,s and 16\,s were thrown away when the fireball was off-screen or missed & \textbf{Changed to} keep every audio fire. A flash may snap or add a bang. It may not delete one \\
+\addlinespace
+Snap each bang to the loudest flux peak in the window & The first muzzle felt late (peak sat on the boom, about 0.25\,s after the attack). A later shot felt early because the picture flash led the sound & \textbf{Changed to} snap to the earliest sharp attack, then snap again after the flash so a picture time moves onto the audio boom \\
+\addlinespace
+Treat a flux peak as inside its own volley, with a low bar at the end of the clip & A phantom bang appeared near 18\,s. A real shot near 16.4\,s was at risk of being merged away & \textbf{Changed to} fill gaps only near a real detected blast. An isolated end-of-clip hit must clear a higher bar \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+On folder 35 the fires were crisp: vehicle plus seven explosions, peaks about 9.84, 11.00, 11.52, 12.27, 13.41, 14.99, and 16.39\,s. No hardcoded times.
+
+\subsection*{Playing A--D on a motor with no amplitude control}
+The phone tester (Event-Trigger) reads \texttt{events.json} for when to fire and the algorithm WAV for how it should feel. This motor is on or off only (\texttt{amplitude control: no}), so strength has to live in time, not in a volume number. Sound2Hap A--D are still not rewritten.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{What we tried} & \textbf{Outcome} & \textbf{Changed to / Continued?} \\
+\midrule
+Mute the WAV and fire one 200\,ms full buzz on every event & Timing was right, but A--D felt identical. The shared event list owned both the instant and the shape & \textbf{Changed to} events own the instant only. Each algorithm's own loudness envelope owns the feel \\
+\addlinespace
+Leave the WAV running between hits, chopped into tiny on/off slices to fake softness & Hundreds of 2--18\,ms restarts. The clip felt like constant chatter & \textbf{Changed to} silence between fires. Differences stay on the hit itself \\
+\addlinespace
+One short buzz whose length follows that algorithm's loudness & Hits were about 20\,ms, so A--D felt the same again & \textbf{Changed to} a denser envelope becomes two or three taps \\
+\addlinespace
+Two or three taps when the envelope looks dense & Every fire felt like a double tap, including single blasts. Counting local peaks on a flat loud plateau invented extra taps & \textbf{Changed to} one motor action per event. Never split one blast into extra pulses \\
+\addlinespace
+Call a hit a spike or a slope from how wide the loud island is, capped near 220\,ms & Short shots felt right. A blast that rings and fades (last shot, about 0.85\,s in \texttt{events.json}) only buzzed at the start & \textbf{Changed to} follow the event from start through end as one declining blast \\
+\addlinespace
+Fade the whole blast with 8--12\,ms on/off slices & The decline felt like chatter, not a falling boom & \textbf{Changed to} solid buzz through the peak, then coarse 40\,ms fade steps (at least 12\,ms on). A short span (about 140\,ms or less) stays one spike \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Latest phone check on folder 35: each fire is one event, shape logged as decay, and the last shot stays on for about 700\,ms before the fade. A--D differ by how that envelope falls, not by amplitude.
+
 \section{Key takeaways}
 \begin{itemize}[leftmargin=*,itemsep=2pt]
   \item Sound2Hap A--D stay as ports of the official scripts. We change context filtering, stitching, and level shaping instead of rewriting the algorithms.
@@ -252,6 +300,8 @@ On the synthetic combined-clip fixture after the scene + rhythm + rendering chan
   \item A mixed clip cannot share one loudness floor. Measure rumble per scene, then decide steady vs rhythmic from repeated gaps, not from percentiles alone.
   \item Rumble power and rhythm live in the renderer: do not flatten dynamics, do not peak-normalize every span, do not let one bang ring into the next.
   \item Grading marks must be for \emph{this} clip and must not feed the detector. Empty marks mean nothing to score; a miss with nothing in \texttt{sustained\_gate.dropped} means the classifier never proposed it.
+  \item A picture flash may move or add a bang. It must not delete an audio fire that has no flash. Snap to the earliest sharp attack, not the louder boom after it.
+  \item On a motor with no amplitude control, do not fake softness with a chopped WAV bed, and do not split one blast into extra taps. One event is one buzz: a short spike, or solid through the peak then a coarse fade.
 \end{itemize}
 
 \end{document}
