@@ -82,6 +82,24 @@ def _get_ast():
     return _ast_model, _ast_extractor
 
 
+def release_models() -> None:
+    """Drop the cached sound models so the video branch has the GPU to itself."""
+    global _ast_model, _ast_extractor, _panns_model
+    _ast_model = None
+    _ast_extractor = None
+    _panns_model = None
+    import gc
+
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def _category_label_index(taxonomy: Taxonomy, id2label: dict) -> dict[str, list[int]]:
     """Map each taxonomy category to the model output indices that feed it."""
     out: dict[str, list[int]] = {name: [] for name in taxonomy.categories}

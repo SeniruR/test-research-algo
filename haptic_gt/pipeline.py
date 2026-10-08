@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from typing import Any
 
@@ -97,6 +98,70 @@ class CandidateTracks:
         return out
 
 
+PLAYBACK_OUTPUT_KEYS = {
+    "algorithm_a_perception_mapping",
+    "algorithm_b_frequency_shifting",
+    "algorithm_c_pitch_matching",
+    "algorithm_d_haptic_gen",
+    "algorithm_e_rule_based",
+}
+
+DEBUG_OUTPUT_DIRECTORIES = {
+    "source_audio": "debug/audio_preparation",
+    "gated_audio": "debug/context_detector",
+    "events_json": "debug/context_detector",
+    "algorithm_e_rule_based_json": "debug/rule_based_generator",
+}
+
+
+def write_candidate_archive(
+    saved_outputs: dict[str, Path],
+    video_path: str | Path,
+    archive_path: str | Path,
+    output_dir: str | Path | None = None,
+) -> Path:
+    """Package app-ready video/WAVs at the root and other artifacts under debug/."""
+    video_path = Path(video_path)
+    archive_path = Path(archive_path)
+    if not video_path.is_file():
+        raise FileNotFoundError(f"Video file does not exist: {video_path}")
+
+    playback_outputs = {
+        key: Path(path)
+        for key, path in saved_outputs.items()
+        if key in PLAYBACK_OUTPUT_KEYS and Path(path).is_file()
+    }
+    if not playback_outputs:
+        raise ValueError("No generated haptic WAV files are available to package")
+
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    video_arcname = f"video{video_path.suffix.lower()}"
+    archived_paths = {video_path.resolve()}
+    with ZipFile(archive_path, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(video_path, video_arcname)
+        for key, path in playback_outputs.items():
+            archive.write(path, path.name)
+            archived_paths.add(path.resolve())
+
+        for key, raw_path in saved_outputs.items():
+            path = Path(raw_path)
+            if key in PLAYBACK_OUTPUT_KEYS or not path.is_file():
+                continue
+            directory = DEBUG_OUTPUT_DIRECTORIES.get(key, f"debug/pipeline/{key}")
+            archive.write(path, f"{directory}/{path.name}")
+            archived_paths.add(path.resolve())
+
+        if output_dir is not None:
+            output_root = Path(output_dir)
+            if output_root.is_dir():
+                for path in sorted(output_root.rglob("*")):
+                    if path.is_file() and path.resolve() not in archived_paths:
+                        relative_path = path.relative_to(output_root).as_posix()
+                        archive.write(path, f"debug/pipeline/{relative_path}")
+
+    return archive_path
+
+
 def _update_events_json_haptics(
     events_json: Path,
     haptic_paths: dict[str, str],
@@ -119,10 +184,11 @@ def generate_candidate_tracks(
     enable_context_detection: bool = True,
     taxonomy_path: str | Path | None = None,
     gate_categories: list[str] | None = None,
-    continuous_haptics: bool = True,
+    continuous_haptics: bool = False,
     continuous_profile: ContinuousProfile | None = None,
     manual_events: list[dict[str, Any]] | dict[str, Any] | str | Path | None = None,
     manual_rumble_peaks: list[float] | None = None,
+    use_qwen: bool | None = None,
 ) -> CandidateTracks:
     """
     Run context detection (optional), Sound2Hap A–D, and rule-based E.
@@ -132,9 +198,9 @@ def generate_candidate_tracks(
     skipped. Rule-based E always runs on the ungated mix (plus video frames
     when ``from_video`` is true).
 
-    With `continuous_haptics` on, each algorithm also renders the full clip as a
-    low-level continuous layer underneath the event accents, so sustained sounds
-    (rumble, rain, engines) keep vibrating instead of leaving silent gaps.
+    With `continuous_haptics` off (the default), A–D contain only event-aligned
+    segments, with silence outside detected events. Enable it to add a low-level
+    full-clip bed underneath those accents.
 
     Pass ``manual_events`` (list of dicts, single event dict, or path to
     events.json) to skip AST/ViViT and trust hand-labeled start/peak/end times.
@@ -142,6 +208,11 @@ def generate_candidate_tracks(
     Pass ``manual_rumble_peaks`` to replace auto ``vehicle`` events with your
     marked rumble times (keeps auto gunshot/explosion). Use when calib shows
     RMS rise cannot separate true rumbles from engine-bed false positives.
+
+    Context detection runs an audio branch and a video branch independently and
+    fuses them. ``use_qwen`` turns the Qwen scene labels in the video branch on
+    or off (default: ``visual_scenes_enabled`` in the taxonomy); the orange-flash
+    scan always runs.
     """
     input_path = Path(input_path)
     output_dir = Path(output_dir)
@@ -212,6 +283,7 @@ def generate_candidate_tracks(
             taxonomy_path=taxonomy_path,
             write_gated=True,
             gate_categories=gate_categories,
+            use_qwen=use_qwen,
         )
         events = event_result.events
         events_json_path = event_result.events_json
@@ -227,6 +299,8 @@ def generate_candidate_tracks(
                 no_haptic_events=len(gate_events) == 0,
                 timeline_hz=taxonomy.timeline_hz,
                 gate_categories_used=gate_cats,
+                detector_info=event_result.detector_info,
+                fusion=event_result.fusion,
             )
             events_json_path = output_dir / EVENTS_JSON_NAME
             events_json_path.write_text(

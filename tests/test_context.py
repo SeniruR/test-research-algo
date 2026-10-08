@@ -22,18 +22,23 @@ from haptic_gt.context.frozen_fusion import DetectedEvent
 
 def test_taxonomy_mapping():
     tax = load_taxonomy()
-    assert match_label_to_category(tax, "Thunder", "audio") == "weather"
     assert match_label_to_category(tax, "Gunshot, gunfire", "audio") == "gunshot"
     assert match_label_to_category(tax, "Artillery fire", "audio") == "explosion"
-    assert match_label_to_category(tax, "chopping wood", "video") == "human_activity"
+    assert match_label_to_category(tax, "Smash, crash", "audio") == "smash"
+    assert match_label_to_category(tax, "Shatter", "audio") == "smash"
+    assert match_label_to_category(tax, "Engine starting", "audio") == "vehicle"
+    assert match_label_to_category(tax, "Accelerating, revving, vroom", "audio") == "vehicle"
+    assert match_label_to_category(tax, "Thunder", "audio") is None
+    assert match_label_to_category(tax, "Car", "audio") is None
+    assert match_label_to_category(tax, "Crash cymbal", "audio") is None
 
 
 def test_event_mask():
     sr = 44100
     events = [
         DetectedEvent(
-            category="weather",
-            label="thunder",
+            category="smash",
+            label="Shatter",
             start_sec=1.0,
             peak_sec=1.5,
             end_sec=2.0,
@@ -46,12 +51,12 @@ def test_event_mask():
     assert mask[0] == 0.0
 
 
-def test_haptic_gate_excludes_human_activity():
+def test_haptic_gate_excludes_unknown_categories():
     tax = load_taxonomy()
     events = [
         DetectedEvent(
-            category="human_activity",
-            label="Chainsaw",
+            category="weather",
+            label="Thunder",
             start_sec=0.0,
             peak_sec=5.0,
             end_sec=11.0,
@@ -96,7 +101,7 @@ def test_gate_categories_override():
     assert {e.category for e in default_gate} == {"vehicle", "gunshot"}
 
     custom_gate = events_for_haptic_gate(
-        events, tax, gate_categories=["vehicle", "human_activity"]
+        events, tax, gate_categories=["vehicle", "smash"]
     )
     assert len(custom_gate) == 1
     assert custom_gate[0].category == "vehicle"
@@ -124,7 +129,9 @@ def test_resolve_gate_categories_default():
     assert "gunshot" in cats
     assert "explosion" in cats
     assert "vehicle" in cats
-    assert "weather" in cats
+    assert "smash" in cats
+    assert "car_crash" in cats
+    assert "weather" not in cats
     assert "human_activity" not in cats
 
 
@@ -255,23 +262,23 @@ def test_dedupe_after_snap_collapses_duplicate_peaks():
     assert abs(merged[0].confidence - 0.64) < 1e-6
 
 
-def test_fusion_weather():
+def test_fusion_smash():
     tax = load_taxonomy()
     tokens = [
         SymbolicToken(
             time_sec=2.0,
-            label="Thunder",
+            label="Smash, crash",
             confidence=0.9,
             modality="audio",
-            category="weather",
+            category="smash",
         )
     ]
     scores = [
-        EncoderScore(time_sec=2.0, label="Thunder", score=0.7, source="audio"),
+        EncoderScore(time_sec=2.0, label="Smash, crash", score=0.7, source="audio"),
     ]
     events = fuse_events(tokens, scores, tax)
     assert len(events) >= 1
-    assert events[0].category == "weather"
+    assert events[0].category == "smash"
 
 
 def test_fusion_gunshot_audio_only():
@@ -1041,7 +1048,7 @@ def test_events_json_reports_attack_strength():
 if __name__ == "__main__":
     test_taxonomy_mapping()
     test_event_mask()
-    test_haptic_gate_excludes_human_activity()
+    test_haptic_gate_excludes_unknown_categories()
     test_gate_categories_override()
     test_multi_event_mask()
     test_resolve_gate_categories_default()
@@ -1051,7 +1058,7 @@ if __name__ == "__main__":
     test_events_from_manual()
     test_refine_snaps_late_hint_to_early_blast_on_short_clip()
     test_dedupe_after_snap_collapses_duplicate_peaks()
-    test_fusion_weather()
+    test_fusion_smash()
     test_fusion_gunshot_audio_only()
     test_peak_split_multiple_blasts()
     test_refine_impulsive_peak_forward()

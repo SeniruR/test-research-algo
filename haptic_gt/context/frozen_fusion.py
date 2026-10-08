@@ -26,6 +26,8 @@ class DetectedEvent:
     #: the attack rose above the moment before it. Impulsive events only.
     attack_rel_max: float | None = None
     attack_prominence: float | None = None
+    #: Picture scene labels (Qwen) overlapping this event. Recorded, not timing.
+    visual_categories: list[str] = field(default_factory=list)
 
 
 def _best_encoder_scores(

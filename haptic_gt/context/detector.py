@@ -6,9 +6,15 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from haptic_gt.context.branches import (
+    run_audio_branch,
+    run_video_branch,
+    write_visual_context,
+)
 from haptic_gt.context.context_detectors import symbolic_tokens_from_scores
 from haptic_gt.context.encoders import run_encoder_pass
 from haptic_gt.context.frozen_fusion import DetectedEvent, dedupe_events_by_peak, fuse_events
+from haptic_gt.context.fusion import fuse_branches
 from haptic_gt.context.mask import (
     apply_gate,
     event_included_in_gate,
@@ -24,14 +30,7 @@ from haptic_gt.context.impulsive_nms import (
 )
 from haptic_gt.context.impulsive_promote import promote_impulsive_transients
 from haptic_gt.context.rumble_filter import filter_sustained_rumble_bursts
-from haptic_gt.context.sed_events import (
-    events_from_frame_posteriors,
-    split_impulsive_by_posterior_peaks,
-)
-from haptic_gt.context.sed_frames import (
-    compute_frame_posteriors,
-    posteriors_to_encoder_scores,
-)
+from haptic_gt.context.sed_frames import release_models
 from haptic_gt.context.sustained_merge import merge_sustained_events
 from haptic_gt.context.taxonomy import load_taxonomy
 from haptic_gt.context.tokenization import tokenize_video_audio
@@ -53,6 +52,7 @@ class EventResult:
     haptic_outputs: dict[str, str] = field(default_factory=dict)
     detector_info: dict = field(default_factory=dict)
     sustained_gate: dict = field(default_factory=dict)
+    fusion: dict = field(default_factory=dict)
 
     def to_dict(self, *, output_dir: Path | None = None) -> dict:
         taxonomy = load_taxonomy()
@@ -90,13 +90,15 @@ class EventResult:
                 row["attack_rel_max"] = e.attack_rel_max
             if e.attack_prominence is not None:
                 row["attack_prominence"] = e.attack_prominence
+            if e.visual_categories:
+                row["visual_categories"] = list(e.visual_categories)
             event_rows.append(row)
 
         haptic_out = {
             key: _rel(val) for key, val in self.haptic_outputs.items() if val
         }
 
-        return {
+        out = {
             "detector": self.detector_info,
             "sustained_gate": self.sustained_gate,
             "no_events_detected": self.no_events_detected,
@@ -106,6 +108,9 @@ class EventResult:
             "haptic_outputs": haptic_out,
             "events": event_rows,
         }
+        if self.fusion:
+            out["fusion"] = self.fusion
+        return out
 
 
 def detect_events(
@@ -119,12 +124,16 @@ def detect_events(
     write_gated: bool = True,
     gate_categories: list[str] | None = None,
     full_scan: bool = False,
+    use_qwen: bool | None = None,
 ) -> EventResult:
     """
-    Run frozen context detection.
+    Run context detection.
 
-    Default (``sed_enabled``): frame-level SED posteriors → hysteresis decoding →
-    spectral-flux onset refinement → events.json → optional gated_audio.wav.
+    Default (``sed_enabled``): the audio branch (frame SED + flux timing, audio
+    only) and the video branch (orange flashes + optional Qwen scene labels,
+    video only) run independently, then ``fuse_branches`` joins them →
+    events.json → optional gated_audio.wav. ``use_qwen`` defaults to
+    ``visual_scenes_enabled`` in the taxonomy.
 
     Legacy path (``full_scan`` or ``sed_enabled: false``): sparse onset proposals →
     window tagging → frozen fusion. Kept for comparison; its onsets are only as
@@ -136,18 +145,20 @@ def detect_events(
     window_sec = window_sec if window_sec is not None else taxonomy.proposal_window_sec
     gate_cats = resolve_gate_categories(taxonomy, gate_categories)
 
-    tokens_data = tokenize_video_audio(video_path, source_wav, timeline_hz=taxonomy.timeline_hz)
-
     if taxonomy.sed_enabled and not full_scan:
-        return _detect_via_frame_sed(
-            tokens_data=tokens_data,
+        if use_qwen is None:
+            use_qwen = taxonomy.visual_scenes_enabled
+        return _detect_via_branches(
             source_wav=source_wav,
             video_path=video_path,
             taxonomy=taxonomy,
             gate_cats=gate_cats,
             output_dir=output_dir,
             write_gated=write_gated,
+            use_qwen=use_qwen,
         )
+
+    tokens_data = tokenize_video_audio(video_path, source_wav, timeline_hz=taxonomy.timeline_hz)
 
     if full_scan:
         proposal_windows = None
@@ -226,6 +237,7 @@ def _finalize(
     write_gated: bool,
     detector_info: dict | None = None,
     sustained_gate: dict | None = None,
+    fusion: dict | None = None,
 ) -> EventResult:
     """Build EventResult and write events.json / gated audio."""
     events = measure_impulsive_attacks(events, source_wav, taxonomy)
@@ -238,6 +250,7 @@ def _finalize(
         gate_categories_used=gate_cats,
         detector_info=detector_info or {"mode": "window_tagging", "use_video": taxonomy.use_video},
         sustained_gate=sustained_gate or {},
+        fusion=fusion or {},
     )
 
     if output_dir is not None:
@@ -265,52 +278,33 @@ def _finalize(
     return result
 
 
-def _detect_via_frame_sed(
+def _detect_via_branches(
     *,
-    tokens_data,
     source_wav: Path,
     video_path: Path,
     taxonomy,
     gate_cats: list[str],
     output_dir: str | Path | None,
     write_gated: bool,
+    use_qwen: bool,
 ) -> EventResult:
     """
-    Frame-level SED path (default).
+    Default path: audio branch, video branch, fusion.
 
-    Per-category posteriors on a 100 ms grid (10 ms with PANNs) are decoded with
-    median filtering + hysteresis, so onsets come from the model's time axis
-    instead of one score per 1 s window. Spectral-flux refinement then sharpens
-    impulsive onsets to sample accuracy.
-
-    Video is not fused here on purpose — see ``use_video`` in taxonomy.yaml.
+    The audio branch decodes frame posteriors (100 ms AST grid, 10 ms with
+    PANNs) and sharpens impulsive onsets with spectral flux; it never opens the
+    video. The video branch scans every frame for orange flashes and, with
+    ``use_qwen``, labels each scene; it never reads the audio. The sound model
+    is freed before Qwen loads so both fit on one GPU.
     """
-    frames = compute_frame_posteriors(tokens_data.audio_16k, taxonomy)
-    encoder_scores = posteriors_to_encoder_scores(frames, taxonomy)
+    audio = run_audio_branch(source_wav, taxonomy)
+    release_models()
+    video = run_video_branch(video_path, taxonomy, use_qwen=use_qwen)
+    if output_dir is not None:
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        write_visual_context(video, output_dir, video_name=video_path.name)
 
-    events = events_from_frame_posteriors(frames, taxonomy)
-    events = split_impulsive_by_posterior_peaks(events, frames, taxonomy)
-    events = refine_event_timing(events, source_wav, taxonomy)
-    events = dedupe_events_by_peak(events)
-    events = promote_impulsive_transients(events, source_wav, encoder_scores, taxonomy)
-    # SED/refine often sit on a decay bump; snap back to the muzzle in-window
-    events = snap_impulsive_peaks_to_attacks(events, source_wav, taxonomy)
-    events = align_impulsive_events_to_flashes(events, video_path, taxonomy)
-    # Picture flash can lead the boom by ~0.2 s; snap again onto the sharp attack
-    events = snap_impulsive_peaks_to_attacks(events, source_wav, taxonomy)
-    # Peaks are on attacks/flashes now; only the spans need rebuilding around them
-    events = refine_event_timing(
-        events, source_wav, taxonomy, relocate_impulsive_peaks=False
-    )
-    events = dedupe_events_by_peak(events)
-    # One accent per blast: a shot plus a bump in its own decay is one bang
-    events = suppress_impulsive_overlaps(events, source_wav, taxonomy)
-    events = merge_sustained_events(events, taxonomy)
-    gate_report: dict = {}
-    events = filter_sustained_rumble_bursts(
-        events, source_wav, taxonomy, report=gate_report
-    )
-    events = dedupe_events_by_peak(events)
+    events, fusion_report = fuse_branches(audio, video, source_wav, taxonomy)
 
     return _finalize(
         events,
@@ -319,14 +313,7 @@ def _detect_via_frame_sed(
         gate_cats=gate_cats,
         output_dir=output_dir,
         write_gated=write_gated,
-        sustained_gate=gate_report,
-        detector_info={
-            "mode": "frame_sed",
-            "backend": frames.backend,
-            "frame_hop_sec": round(frames.hop_sec, 4),
-            "window_sec": taxonomy.sed_window_sec,
-            "onset_high": taxonomy.sed_onset_high,
-            "onset_low": taxonomy.sed_onset_low,
-            "use_video": taxonomy.use_video,
-        },
+        sustained_gate=audio.gate_report,
+        detector_info=audio.detector_info,
+        fusion=fusion_report,
     )

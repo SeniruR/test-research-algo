@@ -479,15 +479,12 @@ def stitch_algorithm_output(
     intermittent = profile.enabled and _use_sustained_bed_mask(
         sustained, duration_sec, taxonomy
     )
+    event_only_sustained = not profile.enabled and bool(sustained)
 
-    # With continuous bed on: bang accents only for impulsive hits.
-    # With continuous off: keep legacy behaviour (accent every gated event).
-    if profile.enabled:
-        accent_events = _impulsive_accent_events(events, taxonomy)
-    else:
-        accent_events = list(events)
+    # Sustained categories follow their detected span; only impulses are peak-aligned.
+    accent_events = _impulsive_accent_events(events, taxonomy)
 
-    if not accent_events and not profile.enabled and not intermittent:
+    if not accent_events and not profile.enabled and not intermittent and not event_only_sustained:
         _write_wav(output_path, timeline, output_sr)
         return
 
@@ -521,6 +518,13 @@ def stitch_algorithm_output(
             if start_idx < 0:
                 segment = segment[-start_idx:]
                 start_idx = 0
+            if not profile.enabled:
+                event_start_idx = max(0, int(round(ev.start_sec * output_sr)))
+                event_end_idx = min(total_samples, int(round(ev.end_sec * output_sr)))
+                if start_idx < event_start_idx:
+                    segment = segment[event_start_idx - start_idx :]
+                    start_idx = event_start_idx
+                segment = segment[: max(0, event_end_idx - start_idx)]
             if start_idx >= total_samples or segment.size == 0:
                 continue
             placements.append((start_idx, segment))
@@ -535,7 +539,7 @@ def stitch_algorithm_output(
             if 0 < keep < segment.size:
                 placements[i] = (start, _release_tail(segment, keep, release))
 
-        if intermittent:
+        if intermittent or event_only_sustained:
             levels = _source_levels(audio, sr, sustained)
             loudest = max(levels) if levels else 0.0
             for i, ev in enumerate(sustained):

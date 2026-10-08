@@ -30,9 +30,10 @@ for name, source in FILES.items():
 sys.path.insert(0, str(PROJECT_ROOT))
 print("Installed haptic_gt at", PKG_DIR)
 print("Modules:", ", ".join(sorted(FILES)))
-from haptic_gt.context.encoders import AST_MODEL_ID, VIVIT_MODEL_ID
+from haptic_gt.context.encoders import AST_MODEL_ID
+from haptic_gt.context.taxonomy import load_taxonomy
 print("AST model:", AST_MODEL_ID)
-print("ViViT model:", VIVIT_MODEL_ID)
+print("Scene model:", load_taxonomy().visual_scene_model)
 '''
 
 # ---------------------------------------------------------------------------
@@ -46,6 +47,8 @@ CELL_INSTALL = """\
 # Optional: PANNs gives true framewise SED (~10 ms frames). Without it the
 # detector falls back to densely-strided AST (100 ms frames). GPU runtime advised.
 !pip install -q panns-inference
+# Video branch: scene cuts + Qwen2.5-VL scene labels (needs transformers >= 4.49)
+!pip install -q "transformers>=4.49" qwen-vl-utils scenedetect
 """
 
 CELL_WORKSPACE = """\
@@ -67,20 +70,29 @@ CELL_UPLOAD = """\
 from pathlib import Path
 from IPython.display import Audio, display
 
+VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v")
+
 candidates = []
 for folder in (Path("/content"), Path("/content/haptic-workspace/input")):
     if folder.exists():
-        candidates.extend(sorted(folder.glob("*.mp4")))
-        candidates.extend(sorted(folder.glob("*.mkv")))
-        candidates.extend(sorted(folder.glob("*.webm")))
+        candidates.extend(
+            sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in VIDEO_EXTS)
+        )
 # Prefer a clip already on the runtime so Run All does not wait on a file picker.
-video_path = next((p for p in candidates if p.is_file()), None)
+video_path = candidates[0] if candidates else None
 if video_path is None:
     from google.colab import files
-    print("Choose a video file to upload...")
+    print("Choose a VIDEO file to upload (" + ", ".join(VIDEO_EXTS) + ")...")
     uploaded = files.upload()
-    video_name = next(iter(uploaded))
-    video_path = Path("/content") / video_name
+    videos = [name for name in uploaded if Path(name).suffix.lower() in VIDEO_EXTS]
+    if not videos:
+        raise ValueError(
+            "That upload is not a video: " + ", ".join(uploaded)
+            + ". Re-run this cell and pick the video clip, not the notebook."
+        )
+    video_path = Path("/content") / videos[0]
+if len(candidates) > 1:
+    print("Several videos found; using the first. Others:", [p.name for p in candidates[1:]])
 
 print("Using video:", video_path)
 print("Output folder:", OUTPUT_DIR)
@@ -94,9 +106,13 @@ from pathlib import Path
 from haptic_gt.pipeline import OUTPUT_NAMES, generate_candidate_tracks
 
 CONTENT_TYPE = "game"
-ENABLE_CONTEXT = True  # set False to skip AST/ViViT and re-run Sound2Hap only
+ENABLE_CONTEXT = True  # set False to skip detection and re-run Sound2Hap only
+CONTINUOUS_HAPTICS = False  # keep A-D silent outside detected events
+# Video branch: the orange-flash scan always runs. Qwen scene labels need an L4
+# (7B model in bf16). False gives audio + flash only, for a straight comparison.
+USE_QWEN = True
 # Categories to include in gated haptics
-GATE_CATEGORIES = ["weather", "gunshot", "explosion", "vehicle", "human_activity"]
+GATE_CATEGORIES = ["gunshot", "explosion", "smash", "car_crash", "vehicle"]
 
 # Auto-detect timing (model alone). Only set a dict for HITL override.
 MANUAL_EVENTS = None
@@ -131,6 +147,8 @@ tracks = generate_candidate_tracks(
     gate_categories=GATE_CATEGORIES,
     manual_events=MANUAL_EVENTS,
     manual_rumble_peaks=MANUAL_RUMBLE_PEAKS,
+    continuous_haptics=CONTINUOUS_HAPTICS,
+    use_qwen=USE_QWEN,
 )
 saved = tracks.save_all()
 
@@ -142,7 +160,13 @@ print(f"No haptic events (gate): {tracks.no_haptic_events}")
 print(f"Gate categories: {tracks.gate_categories_used}")
 if tracks.events_json and tracks.events_json.exists():
     print(f"Events: {tracks.events_json}")
-    print(json.dumps(json.loads(tracks.events_json.read_text()), indent=2)[:2000])
+    _payload = json.loads(tracks.events_json.read_text())
+    _fusion = _payload.get("fusion")
+    if _fusion:
+        print("Fusion (audio branch + video branch):")
+        for _k, _v in _fusion.items():
+            print(f"  {_k}: {_v}")
+    print(json.dumps(_payload, indent=2)[:2000])
 
 print("Saved files:")
 missing = []
@@ -159,7 +183,7 @@ sound2hap_keys = [
     "algorithm_d_haptic_gen",
 ]
 if tracks.no_haptic_events:
-    print("No gate-eligible events — Sound2Hap A–D skipped (see events.json). Rule-based E still ran.")
+    print("No gate-eligible events — A-D WAVs skipped (see events.json). Rule-based E still ran.")
     missing = [name for name in missing if name not in sound2hap_keys]
 if "algorithm_e_rule_based" not in saved:
     missing.append("algorithm_e_rule_based")
@@ -188,11 +212,11 @@ if events_path.exists():
     if events:
         fig, ax = plt.subplots(figsize=(12, 2 + len(events) * 0.3))
         colors = {
-            "weather": "tab:blue",
             "gunshot": "tab:red",
             "explosion": "tab:purple",
+            "smash": "tab:blue",
+            "car_crash": "tab:green",
             "vehicle": "tab:orange",
-            "human_activity": "tab:green",
         }
         for i, ev in enumerate(events):
             c = colors.get(ev["category"], "tab:gray")
@@ -524,16 +548,66 @@ for key, label in labels.items():
 """
 
 CELL_DOWNLOAD = """\
-import shutil
+import re
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 from google.colab import files
 
 if "OUTPUT_DIR" not in globals():
     OUTPUT_DIR = Path("/content/haptic-workspace/output")
 
-zip_base = OUTPUT_DIR.parent / "haptic_candidates"
-zip_path = Path(shutil.make_archive(str(zip_base), "zip", OUTPUT_DIR))
+video = Path(video_path) if globals().get("video_path") else None
+if video is None or not video.is_file():
+    raise FileNotFoundError("The source video is not available to package.")
+
+stem = re.sub(r"[^A-Za-z0-9._-]+", "_", video.stem).strip("._")[:80]
+name = stem or "haptic_candidates"
+zip_path = OUTPUT_DIR.parent / f"{name}.zip"
+
+playback_keys = {
+    "algorithm_a_perception_mapping",
+    "algorithm_b_frequency_shifting",
+    "algorithm_c_pitch_matching",
+    "algorithm_d_haptic_gen",
+    "algorithm_e_rule_based",
+}
+debug_directories = {
+    "source_audio": "debug/audio_preparation",
+    "gated_audio": "debug/context_detector",
+    "events_json": "debug/context_detector",
+    "algorithm_e_rule_based_json": "debug/rule_based_generator",
+}
+playback_outputs = {
+    key: Path(path)
+    for key, path in saved.items()
+    if key in playback_keys and Path(path).is_file()
+}
+if not playback_outputs:
+    raise ValueError("No generated haptic WAV files are available to package.")
+
+archived_paths = {video.resolve()}
+with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as archive:
+    archive.write(video, f"video{video.suffix.lower()}")
+    for path in playback_outputs.values():
+        archive.write(path, path.name)
+        archived_paths.add(path.resolve())
+
+    for key, raw_path in saved.items():
+        path = Path(raw_path)
+        if key in playback_keys or not path.is_file():
+            continue
+        directory = debug_directories.get(key, f"debug/pipeline/{key}")
+        archive.write(path, f"{directory}/{path.name}")
+        archived_paths.add(path.resolve())
+
+    for path in sorted(OUTPUT_DIR.rglob("*")):
+        if path.is_file() and path.resolve() not in archived_paths:
+            relative_path = path.relative_to(OUTPUT_DIR).as_posix()
+            archive.write(path, f"debug/pipeline/{relative_path}")
+
 print("ZIP created:", zip_path)
+print("Root files: source video + generated A–E WAVs")
+print("Debug outputs: debug/audio_preparation, debug/context_detector, debug/rule_based_generator")
 
 files.download(str(zip_path))
 print("Download started.")
@@ -548,7 +622,7 @@ Convert **3–5 minute** video into **gated candidate haptic tracks** for human-
 
 **Runtime:** **T4 GPU** recommended for context detection (AST + ViViT). Sound2Hap A–D and rule-based E can run on CPU.
 
-**Output:** mono **8 kHz** haptic WAV files + `events.json` + `algorithm_e_rule_based.json`
+**Output:** ZIP root contains the source video, event-only **8 kHz A–D WAVs**, and the full-clip rule-based **E WAV** for the Android app. Detector, source-audio, gated-audio, and auxiliary generator outputs are retained under `debug/` by component.
 
 **Setup:** Run all cells top-to-bottom. Upload a video when prompted — no Google Drive needed.
 

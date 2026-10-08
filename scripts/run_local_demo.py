@@ -31,7 +31,7 @@ def main() -> int:
     kwargs: dict = dict(
         from_video=True,
         content_type="game",
-        gate_categories=["weather", "gunshot", "explosion", "vehicle"],
+        gate_categories=["gunshot", "explosion", "smash", "car_crash", "vehicle"],
     )
     if _panns_ready():
         kwargs["enable_context_detection"] = True

@@ -101,6 +101,13 @@ class Taxonomy:
     visual_flash_min_d_hot: float = -0.005
     visual_flash_match_sec: float = 0.50
     visual_flash_min_sep_sec: float = 0.45
+    # Scene labels from the picture (Qwen2.5-VL), video branch
+    visual_scenes_enabled: bool = True
+    visual_scene_backing: bool = True
+    visual_scene_backing_max_sec: float = 2.0
+    visual_scene_model: str = "Qwen/Qwen2.5-VL-7B-Instruct"
+    visual_scene_max_frames: int = 16
+    visual_scene_min_look_sec: float = 1.0
     # Video fusion is off; see taxonomy.yaml for why
     use_video: bool = False
     categories: dict[str, CategoryConfig] = field(default_factory=dict)
@@ -234,6 +241,12 @@ def load_taxonomy(path: str | Path | None = None) -> Taxonomy:
         visual_flash_min_d_hot=float(raw.get("visual_flash_min_d_hot", -0.005)),
         visual_flash_match_sec=float(raw.get("visual_flash_match_sec", 0.50)),
         visual_flash_min_sep_sec=float(raw.get("visual_flash_min_sep_sec", 0.45)),
+        visual_scenes_enabled=bool(raw.get("visual_scenes_enabled", True)),
+        visual_scene_backing=bool(raw.get("visual_scene_backing", True)),
+        visual_scene_backing_max_sec=float(raw.get("visual_scene_backing_max_sec", 2.0)),
+        visual_scene_model=str(raw.get("visual_scene_model", "Qwen/Qwen2.5-VL-7B-Instruct")),
+        visual_scene_max_frames=int(raw.get("visual_scene_max_frames", 16)),
+        visual_scene_min_look_sec=float(raw.get("visual_scene_min_look_sec", 1.0)),
         use_video=bool(raw.get("use_video", False)),
         categories=categories,
     )

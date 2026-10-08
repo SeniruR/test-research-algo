@@ -104,18 +104,55 @@ def _best_impulsive_score(
     return best
 
 
+def drop_chips_under_blasts(
+    events: list[DetectedEvent],
+    blasts: list[DetectedEvent],
+    taxonomy: Taxonomy,
+) -> list[DetectedEvent]:
+    """Remove short sustained chips that sit on one of ``blasts``.
+
+    A short sustained chip sitting on a blast is that blast mislabelled, so it
+    goes. A rumble bed that merely happens to peak under one shot is the engine,
+    and dropping it would stop the vibration the moment the cannon fires --
+    length is what tells them apart.
+    """
+    if not blasts:
+        return list(events)
+    kept: list[DetectedEvent] = []
+    for ev in events:
+        cfg = taxonomy.categories.get(ev.category)
+        impulsive = bool(cfg is not None and cfg.impulsive)
+        short_chip = (ev.end_sec - ev.start_sec) <= taxonomy.sustained_max_gate_sec
+        if not impulsive and short_chip:
+            if any(abs(ev.peak_sec - imp.peak_sec) <= 0.35 for imp in blasts):
+                continue
+            if any(
+                imp.start_sec - 0.1 <= ev.peak_sec <= imp.end_sec + 0.1
+                for imp in blasts
+            ):
+                continue
+        kept.append(ev)
+    return kept
+
+
 def promote_impulsive_transients(
     events: list[DetectedEvent],
     source_wav: str | Path,
     encoder_scores: list[EncoderScore],
     taxonomy: Taxonomy | None = None,
-) -> list[DetectedEvent]:
+    *,
+    return_candidates: bool = False,
+) -> list[DetectedEvent] | tuple[list[DetectedEvent], list[DetectedEvent]]:
     """
     If a sharp flux peak has explosion/gunshot evidence, emit an impulsive
     event even when vehicle scored higher (engine bed under the muzzle).
 
     Quieter volley shots are found by local flux, not 32% of the loudest bang.
     Rumble-like AST explosions (tank drive) are dropped.
+
+    With ``return_candidates`` also returns the sharp attacks that were turned
+    down only because nothing backed them (no AST score, not in a volley, not
+    sharp enough to stand alone). Fusion may promote those with picture support.
     """
     taxonomy = taxonomy or load_taxonomy()
     source_wav = Path(source_wav)
@@ -125,13 +162,16 @@ def promote_impulsive_transients(
     audio = audio.astype(np.float32)
     duration = len(audio) / float(sr)
 
+    def _out(evs: list[DetectedEvent], cands: list[DetectedEvent]):
+        return (evs, cands) if return_candidates else evs
+
     times, flux = _spectral_flux(audio, sr, hop_ms=taxonomy.onset_flux_hop_ms)
     if flux.size == 0:
-        return list(events)
+        return _out(list(events), [])
 
     flux_peak = float(np.max(flux))
     if flux_peak < 1e-12:
-        return list(events)
+        return _out(list(events), [])
 
     hop_sec = taxonomy.onset_flux_hop_ms / 1000.0
     min_dist = taxonomy.impulsive_min_peak_distance_sec
@@ -196,6 +236,7 @@ def promote_impulsive_transients(
     existing_imp = [e for e in surviving if _impulsive(e)]
     half = taxonomy.impulsive_event_half_width_sec
     new_events: list[DetectedEvent] = []
+    candidates: list[DetectedEvent] = []
 
     for idx in idxs:
         peak_t = float(times[idx])
@@ -236,6 +277,23 @@ def promote_impulsive_transients(
                 and prominence >= _FLUX_ONLY_PROMINENCE
             )
         if not ok:
+            if sharp_impact and not has_nearby and not in_volley:
+                start = max(0.0, peak_t - taxonomy.impulsive_pre_roll_sec)
+                end = min(duration, peak_t + half)
+                candidates.append(
+                    DetectedEvent(
+                        category=clip_cat,
+                        label=clip_label,
+                        start_sec=start,
+                        peak_sec=peak_t,
+                        end_sec=max(end, start + 0.2),
+                        confidence=taxonomy.impulsive_encoder_threshold,
+                        context_token=False,
+                        audio_score=None,
+                        video_score=None,
+                        sources=["flux"],
+                    )
+                )
             continue
         if has_nearby:
             cat, label, score = best
@@ -261,23 +319,8 @@ def promote_impulsive_transients(
         existing_imp.append(new_events[-1])
 
     if not new_events:
-        return surviving
+        return _out(surviving, candidates)
 
-    kept: list[DetectedEvent] = list(new_events)
-    for ev in surviving:
-        # A short sustained chip sitting on a blast is that blast mislabelled, so
-        # it goes. A rumble bed that merely happens to peak under one shot is the
-        # engine, and dropping it would stop the vibration the moment the cannon
-        # fires -- length is what tells them apart.
-        short_chip = (ev.end_sec - ev.start_sec) <= taxonomy.sustained_max_gate_sec
-        if not _impulsive(ev) and short_chip:
-            if any(abs(ev.peak_sec - imp.peak_sec) <= 0.35 for imp in new_events):
-                continue
-            if any(
-                imp.start_sec - 0.1 <= ev.peak_sec <= imp.end_sec + 0.1
-                for imp in new_events
-            ):
-                continue
-        kept.append(ev)
+    kept = list(new_events) + drop_chips_under_blasts(surviving, new_events, taxonomy)
     kept.sort(key=lambda e: e.start_sec)
-    return kept
+    return _out(kept, candidates)

@@ -2,7 +2,7 @@ timeline_hz: 100
 context_detector_threshold: 0.85
 encoder_threshold: 0.35
 impulsive_encoder_threshold: 0.30
-# Lower threshold for sustained categories (vehicle, weather) — they score lower than explosions
+# Lower threshold for sustained categories (vehicle) — they score lower than explosions
 sustained_encoder_threshold: 0.25
 # Minimum seconds between impulsive peaks (separate shots / blasts)
 # 0.45 keeps volley shots ~0.5 s apart (11.16 then 11.66)
@@ -75,7 +75,7 @@ proposal_rms_hop_ms: 5.0
 proposal_threshold_ratio: 0.18
 proposal_search_pad_sec: 0.75
 proposal_window_sec: 1.0
-# Sparse scan for sustained sounds (vehicle, human activity) without sharp onsets
+# Sparse scan for sustained sounds (vehicle) without sharp onsets
 proposal_sustained_hop_sec: 1.0
 # Impulsive peak snap: search around classifier hint, snap via spectral flux.
 # Lookback stays short: a 0.9 s window let a clank 0.88 s earlier steal the onset.
@@ -122,6 +122,23 @@ visual_flash_min_d_hot: -0.005
 visual_flash_match_sec: 0.50
 visual_flash_min_sep_sec: 0.45
 
+# --- Picture scenes (Qwen2.5-VL, video branch) ------------------------------
+# Each scene cut is asked which categories are visible. Spans are context, not
+# bang times: a few frames per second cannot see a one-frame muzzle flash.
+# With backing on, a gunshot/explosion/car_crash/smash scene may promote a sharp
+# audio attack that had no AST score; a scene never adds an event by itself.
+# vehicle and engine_start scenes only label events.
+visual_scenes_enabled: true
+visual_scene_backing: true
+# Only a scene this short may back an attack. War tank: a 4.4 s "explosion"
+# scene kept the fireball on screen while the sound decayed, and backing
+# revived the 18 s phantom (sharpness 5.8, under the 6.0 isolated bar).
+visual_scene_backing_max_sec: 2.0
+visual_scene_model: Qwen/Qwen2.5-VL-7B-Instruct
+# 16 frames per scene fits the 7B model in bf16 on a 24 GB L4
+visual_scene_max_frames: 16
+visual_scene_min_look_sec: 1.0
+
 # --- Video branch -----------------------------------------------------------
 # Disabled on purpose. ViViT is Kinetics-400 (human actions: "driving car",
 # "exploding firecrackers"), which does not cover explosion / engine rumble as
@@ -131,24 +148,6 @@ visual_flash_min_sep_sec: 0.45
 use_video: false
 
 categories:
-  weather:
-    audioset_labels:
-      - Thunder
-      - Rain
-      - Wind
-      - Rain on surface
-      - Storm
-    kinetics_labels: []
-    context_token_labels:
-      - thunder
-      - storm
-      - rain
-    audio_weight: 0.8
-    video_weight: 0.2
-    # Thunder is an impulsive transient — snap onset via spectral flux
-    impulsive: true
-    include_in_haptic_gate: true
-
   gunshot:
     audioset_labels:
       - Gunshot, gunfire
@@ -187,10 +186,40 @@ categories:
     impulsive: true
     include_in_haptic_gate: true
 
+  # Labels match by substring in both directions, so no context token here may
+  # contain a short AudioSet label ("crash" would pull in "Crash cymbal").
+  smash:
+    audioset_labels:
+      - Smash, crash
+      - Breaking
+      - Shatter
+      - Crushing
+      - Slam
+    kinetics_labels: []
+    context_token_labels: []
+    audio_weight: 0.7
+    video_weight: 0.3
+    impulsive: true
+    include_in_haptic_gate: true
+
+  # AudioSet has no car-crash class: the impact itself sounds as "Smash, crash"
+  # and lands in smash. This category exists for crashes the picture confirms.
+  # No tokens: "car_crash" would claim the AudioSet label "Car".
+  car_crash:
+    audioset_labels: []
+    kinetics_labels: []
+    context_token_labels: []
+    audio_weight: 0.5
+    video_weight: 0.5
+    impulsive: true
+    include_in_haptic_gate: true
+
   vehicle:
     audioset_labels:
       - Vehicle
       - Engine
+      - Engine starting
+      - Accelerating, revving, vroom
       - Truck
       - Motor vehicle (road)
       - Idling
@@ -208,19 +237,3 @@ categories:
     # Sustained rumble — not impulsive, lower confidence threshold handled by encoder_threshold
     impulsive: false
     include_in_haptic_gate: true
-
-  human_activity:
-    audioset_labels:
-      - Chainsaw
-      - Sawing
-      - Wood
-    kinetics_labels:
-      - chopping wood
-      - cutting trees
-      - using axe
-    context_token_labels:
-      - sawing
-      - chainsaw
-    audio_weight: 0.4
-    video_weight: 0.6
-    include_in_haptic_gate: false

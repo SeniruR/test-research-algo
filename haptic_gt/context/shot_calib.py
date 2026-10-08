@@ -19,7 +19,7 @@ from haptic_gt.context.onset_refine import _spectral_flux, local_flux_ratio
 from haptic_gt.context.proposals import _local_peak_indices
 from haptic_gt.context.taxonomy import Taxonomy, load_taxonomy
 
-IMPULSIVE_CATEGORIES = ("explosion", "gunshot", "weather")
+IMPULSIVE_CATEGORIES = ("explosion", "gunshot", "smash", "car_crash")
 CONFIRMED_CONF = 0.55
 
 

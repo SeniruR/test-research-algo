@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import tempfile
+import sys
+from inspect import signature
+from types import ModuleType, SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
+from zipfile import ZipFile
 
 import numpy as np
 import soundfile as sf
 
 from haptic_gt.context.frozen_fusion import DetectedEvent
 from haptic_gt.haptic_synthesis import ContinuousProfile, stitch_algorithm_output
-from haptic_gt.pipeline import OUTPUT_NAMES, generate_candidate_tracks
+from haptic_gt.pipeline import OUTPUT_NAMES, generate_candidate_tracks, write_candidate_archive
+from scripts.generate_colab_bootstrap import CELL_DOWNLOAD
 
 
 def _write_test_wav(path: Path, duration: float = 3.0, sr: int = 44100) -> None:
@@ -83,6 +88,94 @@ def _active_fraction(path: Path, window_ms: int = 20) -> float:
     return float(np.mean(peaks > 1e-4))
 
 
+def test_candidate_archive_separates_playback_and_debug_artifacts():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        output_dir = root / "output"
+        output_dir.mkdir()
+        video = root / "tank clip.mp4"
+        wav = output_dir / "algorithm_a_perception_mapping.wav"
+        events = output_dir / "events.json"
+        source = output_dir / "source_audio.wav"
+        calibration = output_dir / "calibration" / "rumble_report.json"
+        video.write_bytes(b"video")
+        wav.write_bytes(b"wav")
+        events.write_text("{}", encoding="utf-8")
+        source.write_bytes(b"source")
+        calibration.parent.mkdir()
+        calibration.write_text("{}", encoding="utf-8")
+
+        archive_path = root / "haptic_candidates.zip"
+        write_candidate_archive(
+            {
+                "algorithm_a_perception_mapping": wav,
+                "events_json": events,
+                "source_audio": source,
+            },
+            video,
+            archive_path,
+            output_dir=output_dir,
+        )
+
+        with ZipFile(archive_path) as archive:
+            names = set(archive.namelist())
+
+        assert names == {
+            "video.mp4",
+            "algorithm_a_perception_mapping.wav",
+            "debug/context_detector/events.json",
+            "debug/audio_preparation/source_audio.wav",
+            "debug/pipeline/calibration/rumble_report.json",
+        }
+
+
+def test_colab_download_cell_exports_video_wavs_and_debug_outputs():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        output_dir = root / "output"
+        output_dir.mkdir()
+        video = root / "tank clip.mp4"
+        wav = output_dir / "algorithm_a_perception_mapping.wav"
+        events = output_dir / "events.json"
+        source = output_dir / "source_audio.wav"
+        extra = output_dir / "calibration" / "rumble_report.json"
+        video.write_bytes(b"video")
+        wav.write_bytes(b"wav")
+        events.write_text("{}", encoding="utf-8")
+        source.write_bytes(b"source")
+        extra.parent.mkdir()
+        extra.write_text("{}", encoding="utf-8")
+
+        downloaded = []
+        google_module = ModuleType("google")
+        colab_module = ModuleType("google.colab")
+        colab_module.files = SimpleNamespace(download=downloaded.append)
+        google_module.colab = colab_module
+        namespace = {
+            "OUTPUT_DIR": output_dir,
+            "video_path": video,
+            "saved": {
+                "algorithm_a_perception_mapping": wav,
+                "events_json": events,
+                "source_audio": source,
+            },
+        }
+
+        with patch.dict(sys.modules, {"google": google_module, "google.colab": colab_module}):
+            exec(CELL_DOWNLOAD, namespace)
+
+        with ZipFile(namespace["zip_path"]) as archive:
+            names = set(archive.namelist())
+        assert names == {
+            "video.mp4",
+            "algorithm_a_perception_mapping.wav",
+            "debug/context_detector/events.json",
+            "debug/audio_preparation/source_audio.wav",
+            "debug/pipeline/calibration/rumble_report.json",
+        }
+        assert downloaded == [str(namespace["zip_path"])]
+
+
 def test_stitch_algorithm_output_full_length():
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
@@ -127,6 +220,10 @@ def test_continuous_layer_fills_gaps_between_events():
         assert _active_fraction(continuous) > 0.60
 
 
+def test_candidate_tracks_default_to_event_only_haptics():
+    assert signature(generate_candidate_tracks).parameters["continuous_haptics"].default is False
+
+
 def test_continuous_layer_keeps_events_loudest():
     """Event accents must stay above the continuous bed so hits remain distinct."""
     with tempfile.TemporaryDirectory() as td:
@@ -148,6 +245,58 @@ def test_continuous_layer_keeps_events_loudest():
         near_event = np.max(np.abs(haptic[int(2.0 * sr) : int(2.6 * sr)]))
         bed = np.max(np.abs(haptic[int(4.0 * sr) : int(5.0 * sr)]))
         assert near_event > bed
+
+
+def test_event_only_vehicle_output_stays_inside_detected_span():
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        source = td_path / "source.wav"
+        out = td_path / "vehicle_event_only.wav"
+        _write_test_wav(source, duration=6.0)
+        vehicle = [DetectedEvent("vehicle", "Vehicle", 1.0, 2.5, 3.0, 0.9)]
+
+        def _passthrough(in_wav, out_wav):
+            audio, sr = sf.read(in_wav, always_2d=False)
+            sf.write(out_wav, audio, sr, subtype="PCM_16")
+
+        stitch_algorithm_output(
+            source,
+            vehicle,
+            out,
+            _passthrough,
+            continuous=ContinuousProfile(enabled=False),
+        )
+
+        audio, sr = sf.read(out, always_2d=False)
+        assert _rms(audio, sr, 0.0, 0.9) == 0.0
+        assert _rms(audio, sr, 3.1, 5.9) == 0.0
+        assert _rms(audio, sr, 1.1, 2.9) > 0.0
+
+
+def test_event_only_impulse_output_is_clipped_to_detected_span():
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        source = td_path / "source.wav"
+        out = td_path / "impulse_event_only.wav"
+        _write_test_wav(source, duration=6.0)
+        explosion = [DetectedEvent("explosion", "Explosion", 1.0, 1.2, 1.5, 0.9)]
+
+        def _passthrough(in_wav, out_wav):
+            audio, sr = sf.read(in_wav, always_2d=False)
+            sf.write(out_wav, audio, sr, subtype="PCM_16")
+
+        stitch_algorithm_output(
+            source,
+            explosion,
+            out,
+            _passthrough,
+            continuous=ContinuousProfile(enabled=False),
+        )
+
+        audio, sr = sf.read(out, always_2d=False)
+        assert _rms(audio, sr, 0.0, 1.0) == 0.0
+        assert _rms(audio, sr, 1.1, 1.4) > 0.0
+        assert _rms(audio, sr, 1.5, 5.9) == 0.0
 
 
 def test_vehicle_uses_bed_not_bang_accent():
