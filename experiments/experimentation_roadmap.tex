@@ -380,22 +380,6 @@ Any sudden jump in orange pixels is a flash & Cuts into an orange shot and light
 \end{tabularx}
 \end{center}
 
-\subsection*{Cartoon clip: music under every sound (Video\_Project\_16)}
-A Tom-and-dog cartoon with constant music. It stressed rules that were tuned on war footage.
-
-\begin{center}
-\small
-\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}X@{}}
-\toprule
-\textbf{What we tried} & \textbf{Outcome} & \textbf{Changed to / Continued?} \\
-\midrule
-Flash rules from the war clips & 16 of 40 bangs had no sound behind them (pink characters, dissolves, lightning, a whoosh). Seven moments had an explosion and a smash on the same attack, which the renderer adds into a double-strength hit. White pixels overflowed the colour check and counted as orange & \textbf{Tried:} a picture-only bang needs a sharp sound attack within 0.15\,s, unless the blast fills half the frame (the 62\,s blast plays over music only); a flash attaches to any bang type; one hit per attack; fixed the colour overflow. Replay: 40 $\to$ 26 bangs, war and gun clips unchanged. \textbf{Rolled back} to the previous version, colour fix included; to revisit \\
-\addlinespace
-Same pipeline on the hits after 1:15 and around 1:28, and a dog bark at 1:21 & Hits missed, bark vibrated. Root cause: PANNs scored every bang label at 0.02 or less for the whole clip (it hears ``Music''), so only the flux fallback ran. That fallback needs a very loud anchor bang within 2\,s or 6$\times$ sharpness; these hits were 3--5$\times$ over the music, or quiet next to the clip's loudest scene. The bark passed both bars, and fade time, noisiness, pitch, and brightness could not tell it from a hit & \textbf{Open.} Raising or lowering bars trades misses for false hits. Candidates: separate the music before detection; judge each attack against its own surroundings when the classifier is blind; Qwen on a larger GPU to confirm hits \\
-\bottomrule
-\end{tabularx}
-\end{center}
-
 \section{Key takeaways}
 \begin{itemize}[leftmargin=*,itemsep=2pt]
   \item Sound2Hap A--D stay as ports of the official scripts. We change context filtering, stitching, and level shaping instead of rewriting the algorithms.
@@ -410,8 +394,6 @@ Same pipeline on the hits after 1:15 and around 1:28, and a dog bark at 1:21 & H
   \item Not every bang after a blast is a new one. Fire that stays on screen and bumps in a fading boom are the same blast.
   \item A picture flash needs a real shot behind it: cuts, dissolves, and lighting changes are not flashes.
   \item The app plays the WAVs and nothing else. Anything the app does on top (event punches, a constant bed) erases the differences between A--D.
-  \item Keep A--D provably unchanged (original files plus hashes) and keep the pipeline modular, so a component can be replaced without touching the rest.
-  \item The sound model is the weak point on music-heavy content: when it hears only music, every rule tuned on war footage decides alone. Fixing that is a detection problem, not a threshold problem.
-\end{itemize}
+  \item Keep A--D provably unchanged (original files plus hashes) and keep the pipeline modular, so a component can be replaced without touching the rest.\end{itemize}
 
 \end{document}
