@@ -13,14 +13,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from haptic_gt.context.frozen_fusion import DetectedEvent, dedupe_events_by_peak
-from haptic_gt.context.impulsive_nms import (
+from haptic_gt.components.detectors.fusion_detector.frozen_fusion import DetectedEvent, dedupe_events_by_peak
+from haptic_gt.components.detectors.fusion_detector.impulsive_nms import (
     measure_impulsive_attacks,
     suppress_impulsive_overlaps,
 )
-from haptic_gt.context.impulsive_promote import promote_impulsive_transients
-from haptic_gt.context.onset_refine import refine_event_timing
-from haptic_gt.context.taxonomy import load_taxonomy
+from haptic_gt.components.detectors.fusion_detector.impulsive_promote import promote_impulsive_transients
+from haptic_gt.components.detectors.fusion_detector.onset_refine import refine_event_timing
+from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy
 
 SRC = ROOT / "sample" / "_validate_war_tank" / "source_audio.wav"
 

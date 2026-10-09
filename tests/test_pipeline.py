@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
-import sys
-from inspect import signature
-from types import ModuleType, SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile
@@ -13,10 +11,27 @@ from zipfile import ZipFile
 import numpy as np
 import soundfile as sf
 
-from haptic_gt.context.frozen_fusion import DetectedEvent
-from haptic_gt.haptic_synthesis import ContinuousProfile, stitch_algorithm_output
-from haptic_gt.pipeline import OUTPUT_NAMES, generate_candidate_tracks, write_candidate_archive
-from scripts.generate_colab_bootstrap import CELL_DOWNLOAD
+from haptic_gt.components.detectors.fusion_detector.frozen_fusion import DetectedEvent
+from haptic_gt.core import runner
+from haptic_gt.core.config import SynthesisConfig, load_pipeline_config
+from haptic_gt.core.contracts import Event
+from haptic_gt.core.packaging import write_candidate_archive
+from haptic_gt.core.synthesis import ContinuousProfile, stitch_algorithm_output
+
+IMPULSIVE = {"gunshot", "explosion", "smash", "car_crash"}
+
+
+def _event(category, label, start, peak, end, confidence):
+    return Event(
+        category,
+        label,
+        start,
+        peak,
+        end,
+        confidence,
+        impulsive=category in IMPULSIVE,
+        in_gate=True,
+    )
 
 
 def _write_test_wav(path: Path, duration: float = 3.0, sr: int = 44100) -> None:
@@ -129,53 +144,6 @@ def test_candidate_archive_separates_playback_and_debug_artifacts():
         }
 
 
-def test_colab_download_cell_exports_video_wavs_and_debug_outputs():
-    with tempfile.TemporaryDirectory() as td:
-        root = Path(td)
-        output_dir = root / "output"
-        output_dir.mkdir()
-        video = root / "tank clip.mp4"
-        wav = output_dir / "algorithm_a_perception_mapping.wav"
-        events = output_dir / "events.json"
-        source = output_dir / "source_audio.wav"
-        extra = output_dir / "calibration" / "rumble_report.json"
-        video.write_bytes(b"video")
-        wav.write_bytes(b"wav")
-        events.write_text("{}", encoding="utf-8")
-        source.write_bytes(b"source")
-        extra.parent.mkdir()
-        extra.write_text("{}", encoding="utf-8")
-
-        downloaded = []
-        google_module = ModuleType("google")
-        colab_module = ModuleType("google.colab")
-        colab_module.files = SimpleNamespace(download=downloaded.append)
-        google_module.colab = colab_module
-        namespace = {
-            "OUTPUT_DIR": output_dir,
-            "video_path": video,
-            "saved": {
-                "algorithm_a_perception_mapping": wav,
-                "events_json": events,
-                "source_audio": source,
-            },
-        }
-
-        with patch.dict(sys.modules, {"google": google_module, "google.colab": colab_module}):
-            exec(CELL_DOWNLOAD, namespace)
-
-        with ZipFile(namespace["zip_path"]) as archive:
-            names = set(archive.namelist())
-        assert names == {
-            "video.mp4",
-            "algorithm_a_perception_mapping.wav",
-            "debug/context_detector/events.json",
-            "debug/audio_preparation/source_audio.wav",
-            "debug/pipeline/calibration/rumble_report.json",
-        }
-        assert downloaded == [str(namespace["zip_path"])]
-
-
 def test_stitch_algorithm_output_full_length():
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
@@ -184,8 +152,8 @@ def test_stitch_algorithm_output_full_length():
         _write_test_wav(source, duration=5.0)
 
         events = [
-            DetectedEvent("gunshot", "Gunshot", 1.0, 1.2, 1.5, 0.9),
-            DetectedEvent("gunshot", "Gunshot", 3.0, 3.2, 3.5, 0.9),
+            _event("gunshot", "Gunshot", 1.0, 1.2, 1.5, 0.9),
+            _event("gunshot", "Gunshot", 3.0, 3.2, 3.5, 0.9),
         ]
         stitch_algorithm_output(source, events, out, lambda i, o: _write_test_wav(o, 0.5))
 
@@ -201,7 +169,7 @@ def test_continuous_layer_fills_gaps_between_events():
         source = td_path / "source.wav"
         _write_test_wav(source, duration=6.0)
 
-        events = [DetectedEvent("gunshot", "Gunshot", 1.0, 1.2, 1.5, 0.9)]
+        events = [_event("gunshot", "Gunshot", 1.0, 1.2, 1.5, 0.9)]
 
         def _passthrough(in_wav, out_wav):
             audio, sr = sf.read(in_wav, always_2d=False)
@@ -220,8 +188,9 @@ def test_continuous_layer_fills_gaps_between_events():
         assert _active_fraction(continuous) > 0.60
 
 
-def test_candidate_tracks_default_to_event_only_haptics():
-    assert signature(generate_candidate_tracks).parameters["continuous_haptics"].default is False
+def test_default_pipeline_config_is_event_only_haptics():
+    assert SynthesisConfig().continuous.enabled is False
+    assert load_pipeline_config().synthesis.continuous.enabled is False
 
 
 def test_continuous_layer_keeps_events_loudest():
@@ -232,7 +201,7 @@ def test_continuous_layer_keeps_events_loudest():
         out = td_path / "haptic.wav"
         _write_test_wav(source, duration=6.0)
 
-        events = [DetectedEvent("gunshot", "Gunshot", 2.0, 2.2, 2.5, 0.9)]
+        events = [_event("gunshot", "Gunshot", 2.0, 2.2, 2.5, 0.9)]
 
         def _passthrough(in_wav, out_wav):
             audio, sr = sf.read(in_wav, always_2d=False)
@@ -253,7 +222,7 @@ def test_event_only_vehicle_output_stays_inside_detected_span():
         source = td_path / "source.wav"
         out = td_path / "vehicle_event_only.wav"
         _write_test_wav(source, duration=6.0)
-        vehicle = [DetectedEvent("vehicle", "Vehicle", 1.0, 2.5, 3.0, 0.9)]
+        vehicle = [_event("vehicle", "Vehicle", 1.0, 2.5, 3.0, 0.9)]
 
         def _passthrough(in_wav, out_wav):
             audio, sr = sf.read(in_wav, always_2d=False)
@@ -279,7 +248,7 @@ def test_event_only_impulse_output_is_clipped_to_detected_span():
         source = td_path / "source.wav"
         out = td_path / "impulse_event_only.wav"
         _write_test_wav(source, duration=6.0)
-        explosion = [DetectedEvent("explosion", "Explosion", 1.0, 1.2, 1.5, 0.9)]
+        explosion = [_event("explosion", "Explosion", 1.0, 1.2, 1.5, 0.9)]
 
         def _passthrough(in_wav, out_wav):
             audio, sr = sf.read(in_wav, always_2d=False)
@@ -308,7 +277,7 @@ def test_vehicle_uses_bed_not_bang_accent():
         _write_test_wav(source, duration=4.0)
 
         events = [
-            DetectedEvent("vehicle", "Vehicle", 0.16, 0.725, 1.43, 0.46),
+            _event("vehicle", "Vehicle", 0.16, 0.725, 1.43, 0.46),
         ]
 
         def _passthrough(in_wav, out_wav):
@@ -334,7 +303,7 @@ def test_vehicle_uses_bed_not_bang_accent():
 
 
 def test_merge_sustained_collapses_vehicle_chips():
-    from haptic_gt.context.sustained_merge import merge_sustained_events
+    from haptic_gt.components.detectors.fusion_detector.sustained_merge import merge_sustained_events
 
     chips = [
         DetectedEvent("vehicle", "Vehicle", 6.5, 6.7, 7.0, 0.4),
@@ -353,7 +322,7 @@ def test_merge_sustained_collapses_vehicle_chips():
 
 
 def test_merge_does_not_bridge_far_rumble_bursts():
-    from haptic_gt.context.sustained_merge import merge_sustained_events
+    from haptic_gt.components.detectors.fusion_detector.sustained_merge import merge_sustained_events
 
     bursts = [
         DetectedEvent("vehicle", "Vehicle", 34.0, 34.5, 35.0, 0.4),
@@ -368,8 +337,8 @@ def test_rumble_filter_drops_steady_bed_keeps_burst():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.rumble_filter import filter_sustained_rumble_bursts
-    from haptic_gt.context.taxonomy import load_taxonomy
+    from haptic_gt.components.detectors.fusion_detector.rumble_filter import filter_sustained_rumble_bursts
+    from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy
 
     tax = load_taxonomy()
     sr = 44100
@@ -401,8 +370,8 @@ def test_rumble_filter_drops_sub_half_second_bed_ticks():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.rumble_filter import filter_sustained_rumble_bursts
-    from haptic_gt.context.taxonomy import load_taxonomy
+    from haptic_gt.components.detectors.fusion_detector.rumble_filter import filter_sustained_rumble_bursts
+    from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy
 
     tax = load_taxonomy()
     sr = 44100
@@ -434,8 +403,8 @@ def test_rumble_filter_fills_loud_plateau_without_ast():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.rumble_filter import filter_sustained_rumble_bursts
-    from haptic_gt.context.taxonomy import load_taxonomy
+    from haptic_gt.components.detectors.fusion_detector.rumble_filter import filter_sustained_rumble_bursts
+    from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy
 
     tax = load_taxonomy()
     sr = 44100
@@ -469,8 +438,8 @@ def test_rumble_filter_keeps_drive_when_cannons_present():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.rumble_filter import filter_sustained_rumble_bursts
-    from haptic_gt.context.taxonomy import load_taxonomy
+    from haptic_gt.components.detectors.fusion_detector.rumble_filter import filter_sustained_rumble_bursts
+    from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy
 
     tax = load_taxonomy()
     sr = 44100
@@ -500,9 +469,9 @@ def test_rumble_filter_keeps_drive_when_cannons_present():
 
 def test_salience_threshold_ignores_cannon_outliers():
     """Explosions must not set the vehicle loudness floor above tank drive."""
-    from haptic_gt.context.onset_refine import _envelope_rms
-    from haptic_gt.context.sustained_salience import salience_stats
-    from haptic_gt.context.taxonomy import load_taxonomy
+    from haptic_gt.components.detectors.fusion_detector.onset_refine import _envelope_rms
+    from haptic_gt.components.detectors.fusion_detector.sustained_salience import salience_stats
+    from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy
 
     tax = load_taxonomy()
     sr = 44100
@@ -527,9 +496,9 @@ def test_silence_does_not_collapse_salience_threshold():
     Silence is a mode of its own; if it is left in the statistics the split lands
     just above zero and the whole clip becomes one island.
     """
-    from haptic_gt.context.onset_refine import _envelope_rms
-    from haptic_gt.context.sustained_salience import rms_islands, salience_stats
-    from haptic_gt.context.taxonomy import load_taxonomy
+    from haptic_gt.components.detectors.fusion_detector.onset_refine import _envelope_rms
+    from haptic_gt.components.detectors.fusion_detector.sustained_salience import rms_islands, salience_stats
+    from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy
 
     tax = load_taxonomy()
     sr = 44100
@@ -565,8 +534,8 @@ def test_repeated_lulls_are_a_rhythm_but_one_long_lull_is_a_camera_angle():
     percentiles alone cannot tell an intermittent car rumble from a drive filmed
     from a wider angle for a few seconds.
     """
-    from haptic_gt.context.sustained_salience import _region_threshold
-    from haptic_gt.context.taxonomy import load_taxonomy
+    from haptic_gt.components.detectors.fusion_detector.sustained_salience import _region_threshold
+    from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy
 
     tax = load_taxonomy()
     dt = 0.005
@@ -587,8 +556,8 @@ def test_repeated_lulls_are_a_rhythm_but_one_long_lull_is_a_camera_angle():
 
 def test_clanks_over_a_steady_drive_are_not_a_rhythm():
     """Track clanks are loud and regular; the drive must not be chopped between them."""
-    from haptic_gt.context.sustained_salience import _region_threshold
-    from haptic_gt.context.taxonomy import load_taxonomy
+    from haptic_gt.components.detectors.fusion_detector.sustained_salience import _region_threshold
+    from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy
 
     tax = load_taxonomy()
     dt = 0.005
@@ -605,7 +574,7 @@ def test_clanks_over_a_steady_drive_are_not_a_rhythm():
 
 def test_island_start_follows_the_attack_ramp_not_the_gate_crossing():
     """A rumble that ramps up must buzz from the ramp, not a third of a second in."""
-    from haptic_gt.context.sustained_salience import rms_islands
+    from haptic_gt.components.detectors.fusion_detector.sustained_salience import rms_islands
 
     dt = 0.005
     times = np.arange(0.0, 4.0, dt)
@@ -622,7 +591,7 @@ def test_island_start_follows_the_attack_ramp_not_the_gate_crossing():
 
 def test_island_edges_never_produce_overlapping_bursts():
     """Both edges walking into the same lull must yield one burst, not two."""
-    from haptic_gt.context.sustained_salience import rms_islands
+    from haptic_gt.components.detectors.fusion_detector.sustained_salience import rms_islands
 
     dt = 0.005
     times = np.arange(0.0, 5.0, dt)
@@ -642,8 +611,8 @@ def test_rumble_filter_splits_ast_slab_to_loud_islands():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.rumble_filter import filter_sustained_rumble_bursts
-    from haptic_gt.context.taxonomy import load_taxonomy
+    from haptic_gt.components.detectors.fusion_detector.rumble_filter import filter_sustained_rumble_bursts
+    from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy
 
     tax = load_taxonomy()
     sr = 44100
@@ -675,8 +644,8 @@ def test_rumble_filter_keeps_steady_idle():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.rumble_filter import filter_sustained_rumble_bursts
-    from haptic_gt.context.taxonomy import load_taxonomy
+    from haptic_gt.components.detectors.fusion_detector.rumble_filter import filter_sustained_rumble_bursts
+    from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy
 
     tax = load_taxonomy()
     sr = 44100
@@ -697,7 +666,7 @@ def test_rumble_calibration_marks_fp_and_miss():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.rumble_calib import calibrate_rumble_thresholds
+    from haptic_gt.components.detectors.fusion_detector.rumble_calib import calibrate_rumble_thresholds
 
     sr = 44100
     duration = 10.0
@@ -740,7 +709,7 @@ def test_scan_rumble_timeline_100ms():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.rumble_calib import scan_rumble_timeline
+    from haptic_gt.components.detectors.fusion_detector.rumble_calib import scan_rumble_timeline
 
     sr = 44100
     duration = 6.0
@@ -765,10 +734,10 @@ def test_intermittent_vehicle_masks_quiet_gaps():
         _write_test_wav(source, duration=12.0)
 
         events = [
-            DetectedEvent("vehicle", "Vehicle", 1.0, 1.2, 2.0, 0.4),
-            DetectedEvent("vehicle", "Vehicle", 4.0, 4.2, 5.0, 0.4),
-            DetectedEvent("vehicle", "Vehicle", 7.0, 7.2, 8.0, 0.4),
-            DetectedEvent("vehicle", "Vehicle", 9.5, 9.7, 10.5, 0.4),
+            _event("vehicle", "Vehicle", 1.0, 1.2, 2.0, 0.4),
+            _event("vehicle", "Vehicle", 4.0, 4.2, 5.0, 0.4),
+            _event("vehicle", "Vehicle", 7.0, 7.2, 8.0, 0.4),
+            _event("vehicle", "Vehicle", 9.5, 9.7, 10.5, 0.4),
         ]
 
         def _passthrough(in_wav, out_wav):
@@ -800,9 +769,22 @@ def test_pipeline_skips_haptics_when_no_gate_events():
             _write_test_wav(Path(output_path))
             return Path(output_path)
 
-        with patch("haptic_gt.pipeline.extract_audio_from_video", side_effect=_fake_extract):
-            with patch("haptic_gt.pipeline.detect_events") as mock_detect:
-                from haptic_gt.context.detector import EventResult
+        config = load_pipeline_config(
+            overrides={
+                "detector": {
+                    "name": "fusion_detector",
+                    "params": {"gate_categories": ["gunshot", "explosion"]},
+                },
+                "generators": [
+                    {"name": "a_perception_mapping"},
+                    {"name": "e_rule_based", "params": {"use_video": False}},
+                ],
+            }
+        )
+        detect_target = "haptic_gt.components.detectors.fusion_detector.component.detect_events"
+        with patch("haptic_gt.core.runner.extract_audio_from_video", side_effect=_fake_extract):
+            with patch(detect_target) as mock_detect:
+                from haptic_gt.components.detectors.fusion_detector.detector import EventResult
 
                 mock_detect.return_value = EventResult(
                     events=mock_events,
@@ -810,25 +792,23 @@ def test_pipeline_skips_haptics_when_no_gate_events():
                     no_haptic_events=True,
                     gate_categories_used=["gunshot", "explosion"],
                 )
+                result = runner.run_pipeline(config, fake_video, td_path)
 
-                tracks = generate_candidate_tracks(
-                    fake_video,
-                    td_path,
-                    from_video=True,
-                    enable_context_detection=True,
-                    gate_categories=["gunshot", "explosion"],
-                )
-
-        assert tracks.algorithm_a is None
-        assert tracks.no_haptic_events is True
-        assert tracks.algorithm_e is not None
-        assert tracks.algorithm_e.exists()
+        assert len(result.events) == 1
+        assert result.events[0].in_gate is False
+        assert result.no_haptic_events is True
+        assert "algorithm_a_perception_mapping.wav" not in result.outputs
+        assert result.outputs["algorithm_e_rule_based.wav"].exists()
+        assert result.gated_wav is None
+        payload = json.loads(result.events_json.read_text(encoding="utf-8"))
+        assert payload["no_haptic_events"] is True
+        assert payload["haptic_outputs"] == {"algorithm_e": "algorithm_e_rule_based.wav"}
 
 
 def test_gate_report_names_the_scenes_and_the_spans_it_dropped():
     """A rumble that never reaches the haptic must say why, and how far off it was."""
-    from haptic_gt.context.rumble_filter import filter_sustained_rumble_bursts
-    from haptic_gt.context.taxonomy import load_taxonomy
+    from haptic_gt.components.detectors.fusion_detector.rumble_filter import filter_sustained_rumble_bursts
+    from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy
 
     tax = load_taxonomy()
     sr = 22050
@@ -857,8 +837,8 @@ def test_gate_report_names_the_scenes_and_the_spans_it_dropped():
 
 def test_a_close_car_rumble_does_not_gate_out_a_distant_drive():
     """One clip, three sources: the loudest must not set the floor for the rest."""
-    from haptic_gt.context.rumble_filter import filter_sustained_rumble_bursts
-    from haptic_gt.context.taxonomy import load_taxonomy
+    from haptic_gt.components.detectors.fusion_detector.rumble_filter import filter_sustained_rumble_bursts
+    from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy
 
     tax = load_taxonomy()
     sr = 22050
@@ -906,7 +886,7 @@ def test_rumble_haptic_follows_the_bursts_inside_one_span():
         out = td_path / "haptic.wav"
         stitch_algorithm_output(
             source,
-            [DetectedEvent("vehicle", "Vehicle", 0.5, 2.5, 9.5, 0.6)],
+            [_event("vehicle", "Vehicle", 0.5, 2.5, 9.5, 0.6)],
             out,
             _passthrough,
         )
@@ -941,7 +921,7 @@ def test_a_distant_rumble_scene_hits_softer_than_a_close_one():
         out = td_path / "haptic.wav"
         stitch_algorithm_output(
             source,
-            [DetectedEvent("vehicle", "Vehicle", a, (a + b) / 2, b, 0.6) for a, b in spans],
+            [_event("vehicle", "Vehicle", a, (a + b) / 2, b, 0.6) for a, b in spans],
             out,
             _passthrough,
         )
@@ -981,7 +961,7 @@ def test_a_transient_in_one_span_does_not_make_that_span_the_quiet_one():
         out = td_path / "haptic.wav"
         stitch_algorithm_output(
             source,
-            [DetectedEvent("vehicle", "Vehicle", a, (a + b) / 2, b, 0.6) for a, b in spans],
+            [_event("vehicle", "Vehicle", a, (a + b) / 2, b, 0.6) for a, b in spans],
             out,
             _passthrough,
         )
@@ -1015,7 +995,7 @@ def test_accent_lands_slightly_ahead_of_the_attack():
         profile = ContinuousProfile(enabled=False)
         stitch_algorithm_output(
             source,
-            [DetectedEvent("explosion", "Explosion", 1.95, peak_sec, 2.6, 0.9)],
+            [_event("explosion", "Explosion", 1.95, peak_sec, 2.6, 0.9)],
             out,
             _passthrough,
             continuous=profile,
@@ -1048,8 +1028,8 @@ def test_volley_accents_do_not_ring_into_each_other():
         stitch_algorithm_output(
             source,
             [
-                DetectedEvent("explosion", "Explosion", 1.0, 1.05, 1.4, 0.9),
-                DetectedEvent("explosion", "Explosion", 1.5, 1.55, 1.9, 0.9),
+                _event("explosion", "Explosion", 1.0, 1.05, 1.4, 0.9),
+                _event("explosion", "Explosion", 1.5, 1.55, 1.9, 0.9),
             ],
             out,
             _passthrough,
@@ -1066,40 +1046,48 @@ def test_volley_accents_do_not_ring_into_each_other():
     assert dip < 0.4 * body, (body, dip)
 
 
-def test_output_names_layout():
-    assert OUTPUT_NAMES["algorithm_a_perception_mapping"].endswith(".wav")
-    assert OUTPUT_NAMES["algorithm_e_rule_based"] == "algorithm_e_rule_based.wav"
-    assert OUTPUT_NAMES["gated_audio"] == "gated_audio.wav"
+def test_default_generators_fill_the_app_slots():
+    from haptic_gt.core.registry import load_generators
+
+    generators = load_generators(load_pipeline_config().generators)
+    names = {g.slot: g.output_name for g in generators}
+    assert names["a"] == "algorithm_a_perception_mapping.wav"
+    assert names["e"] == "algorithm_e_rule_based.wav"
+    assert all(n.startswith(f"algorithm_{s}_") for s, n in names.items())
 
 
-def test_manual_events_skips_detector_and_writes_events_json():
+def test_manual_events_detector_writes_events_json():
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
         source_in = td_path / "clip.wav"
         _write_test_wav(source_in, duration=4.0)
 
-        with patch("haptic_gt.pipeline.stitch_algorithm_output") as mock_stitch:
-            mock_stitch.side_effect = lambda *args, **kwargs: None
-            tracks = generate_candidate_tracks(
-                source_in,
-                td_path / "out",
-                from_video=False,
-                enable_context_detection=True,
-                manual_events={
-                    "category": "explosion",
-                    "start_sec": 0.22,
-                    "peak_sec": 0.24,
-                    "end_sec": 3.66,
+        config = load_pipeline_config(
+            overrides={
+                "detector": {
+                    "name": "manual_events",
+                    "params": {
+                        "events": {
+                            "category": "explosion",
+                            "start_sec": 0.22,
+                            "peak_sec": 0.24,
+                            "end_sec": 3.66,
+                        },
+                        "gate_categories": ["explosion"],
+                    },
                 },
-                gate_categories=["explosion"],
-            )
+            }
+        )
+        with patch("haptic_gt.core.runner.stitch_algorithm_output") as mock_stitch:
+            mock_stitch.side_effect = lambda *args, **kwargs: None
+            result = runner.run_pipeline(config, source_in, td_path / "out", from_video=False)
 
-        assert tracks.events is not None
-        assert len(tracks.events) == 1
-        assert abs(tracks.events[0].peak_sec - 0.24) < 1e-6
-        assert tracks.events_json is not None
-        assert tracks.events_json.exists()
-        payload = tracks.events_json.read_text(encoding="utf-8")
-        assert "0.24" in payload
-        assert '"sources": [' in payload or "manual" in payload
+        assert len(result.events) == 1
+        assert abs(result.events[0].peak_sec - 0.24) < 1e-6
+        assert result.events[0].impulsive is True
+        assert result.events_json.exists()
+        payload = json.loads(result.events_json.read_text(encoding="utf-8"))
+        assert payload["detector"]["mode"] == "manual"
+        assert payload["events"][0]["sources"] == ["manual"]
+        assert payload["events"][0]["included_in_gate"] is True
         assert mock_stitch.call_count == 4

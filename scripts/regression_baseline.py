@@ -44,27 +44,8 @@ def _copy_source(_video, output_path, sr=None):
     return output_path
 
 
-def _run_legacy(scenario: dict, out_dir: Path) -> dict[str, Path]:
-    from haptic_gt import pipeline
-
-    pipeline.extract_audio_from_video = _copy_source
-    tracks = pipeline.generate_candidate_tracks(
-        VIDEO,
-        out_dir,
-        from_video=True,
-        enable_context_detection=False,
-        manual_events=EVENTS_JSON,
-        gate_categories=GATE_CATEGORIES,
-        continuous_haptics=scenario["continuous"],
-    )
-    return tracks.save_all()
-
-
 def _run(scenario: dict, out_dir: Path) -> dict[str, Path]:
-    try:
-        from haptic_gt.core import runner
-    except ImportError:
-        return _run_legacy(scenario, out_dir)
+    from haptic_gt.core import runner
     from haptic_gt.core.config import load_pipeline_config
 
     runner.extract_audio_from_video = _copy_source

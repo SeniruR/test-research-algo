@@ -10,17 +10,17 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from haptic_gt.context.branches import (
+from haptic_gt.components.detectors.fusion_detector.branches import (
     AudioBranchResult,
     VideoBranchResult,
     run_audio_branch,
     write_visual_context,
 )
-from haptic_gt.context.encoders import EncoderScore
-from haptic_gt.context.frozen_fusion import DetectedEvent
-from haptic_gt.context.fusion import annotate_scene_labels, fuse_branches
-from haptic_gt.context.taxonomy import load_taxonomy
-from haptic_gt.context.visual_scenes import (
+from haptic_gt.components.detectors.fusion_detector.encoders import EncoderScore
+from haptic_gt.components.detectors.fusion_detector.frozen_fusion import DetectedEvent
+from haptic_gt.components.detectors.fusion_detector.fusion import annotate_scene_labels, fuse_branches
+from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy
+from haptic_gt.components.detectors.fusion_detector.visual_scenes import (
     VisualSpan,
     look_window,
     parse_categories,
@@ -181,7 +181,7 @@ def test_scene_labels_are_recorded_without_moving_times():
 
 
 def test_events_json_carries_fusion_and_scene_labels():
-    from haptic_gt.context.detector import EventResult
+    from haptic_gt.components.detectors.fusion_detector.detector import EventResult
 
     ev = DetectedEvent("gunshot", "Gunshot, gunfire", 0.9, 1.0, 1.4, 0.4)
     ev.visual_categories = ["gunshot"]
@@ -206,7 +206,7 @@ def test_visual_context_file_lists_flashes_and_spans():
 
 
 def test_promote_can_return_unbacked_candidates():
-    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+    from haptic_gt.components.detectors.fusion_detector.impulsive_promote import promote_impulsive_transients
 
     tax = load_taxonomy()
     with tempfile.TemporaryDirectory() as td:

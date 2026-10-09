@@ -1,0 +1,2 @@
+# Upstream Sound2Hap files must stay byte-identical to GitHub (checked by SHA256SUMS)
+third_party/sound2hap/** -text

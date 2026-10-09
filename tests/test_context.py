@@ -5,19 +5,19 @@ from __future__ import annotations
 import numpy as np
 import soundfile as sf
 
-from haptic_gt.context.event_aggregation import aggregate_events
-from haptic_gt.context.context_detectors import SymbolicToken
-from haptic_gt.context.encoders import EncoderScore
-from haptic_gt.context.frozen_fusion import fuse_events
-from haptic_gt.context.mask import (
+from haptic_gt.components.detectors.fusion_detector.event_aggregation import aggregate_events
+from haptic_gt.components.detectors.fusion_detector.context_detectors import SymbolicToken
+from haptic_gt.components.detectors.fusion_detector.encoders import EncoderScore
+from haptic_gt.components.detectors.fusion_detector.frozen_fusion import fuse_events
+from haptic_gt.components.detectors.fusion_detector.mask import (
     build_event_mask,
     events_for_haptic_gate,
     resolve_gate_categories,
 )
-from haptic_gt.context.onset_refine import refine_event_timing
-from haptic_gt.context.proposals import propose_onsets
-from haptic_gt.context.taxonomy import load_taxonomy, match_label_to_category
-from haptic_gt.context.frozen_fusion import DetectedEvent
+from haptic_gt.components.detectors.fusion_detector.onset_refine import refine_event_timing
+from haptic_gt.components.detectors.fusion_detector.proposals import propose_onsets
+from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy, match_label_to_category
+from haptic_gt.components.detectors.fusion_detector.frozen_fusion import DetectedEvent
 
 
 def test_taxonomy_mapping():
@@ -201,7 +201,7 @@ def test_propose_keeps_quiet_early_and_loud_late():
 
 
 def test_events_from_manual():
-    from haptic_gt.context.manual_events import events_from_manual
+    from haptic_gt.components.detectors.fusion_detector.manual_events import events_from_manual
 
     events = events_from_manual(
         {
@@ -251,7 +251,7 @@ def test_refine_snaps_late_hint_to_early_blast_on_short_clip():
 
 
 def test_dedupe_after_snap_collapses_duplicate_peaks():
-    from haptic_gt.context.frozen_fusion import dedupe_events_by_peak
+    from haptic_gt.components.detectors.fusion_detector.frozen_fusion import dedupe_events_by_peak
 
     events = [
         DetectedEvent("explosion", "Explosion", 0.17, 0.25, 1.10, 0.64),
@@ -351,7 +351,8 @@ def test_haptic_onset_alignment():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.haptic_synthesis import stitch_algorithm_output
+    from haptic_gt.core.contracts import Event
+    from haptic_gt.core.synthesis import stitch_algorithm_output
 
     sr = 44100
     duration = 4.0
@@ -366,7 +367,7 @@ def test_haptic_onset_alignment():
         sf.write(source, audio.astype(np.float32), sr, subtype="PCM_16")
 
         events = [
-            DetectedEvent("explosion", "Explosion", 1.9, 2.0, 2.4, 0.9),
+            Event("explosion", "Explosion", 1.9, 2.0, 2.4, 0.9, impulsive=True, in_gate=True),
         ]
 
         def _fake_algo(inp, outp):
@@ -391,7 +392,7 @@ def test_propose_all_includes_sustained_scan():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.proposals import propose_all_windows
+    from haptic_gt.components.detectors.fusion_detector.proposals import propose_all_windows
 
     sr = 44100
     duration = 10.0
@@ -513,7 +514,7 @@ def test_promote_recovers_cannon_labeled_vehicle():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+    from haptic_gt.components.detectors.fusion_detector.impulsive_promote import promote_impulsive_transients
 
     tax = load_taxonomy()
     sr = 44100
@@ -543,7 +544,7 @@ def test_promote_recovers_quieter_volley_shots():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+    from haptic_gt.components.detectors.fusion_detector.impulsive_promote import promote_impulsive_transients
 
     tax = load_taxonomy()
     sr = 44100
@@ -584,7 +585,7 @@ def test_promote_ignores_track_clanks_in_drive():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+    from haptic_gt.components.detectors.fusion_detector.impulsive_promote import promote_impulsive_transients
 
     tax = load_taxonomy()
     sr = 44100
@@ -622,7 +623,7 @@ def test_demote_rumble_false_explosion():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+    from haptic_gt.components.detectors.fusion_detector.impulsive_promote import promote_impulsive_transients
 
     tax = load_taxonomy()
     sr = 44100
@@ -654,7 +655,7 @@ def test_demote_rumble_false_explosion():
 
 def test_clip_start_is_not_a_transient():
     """Silence-to-signal at t=0 must not look like an attack."""
-    from haptic_gt.context.onset_refine import _spectral_flux, local_flux_ratio
+    from haptic_gt.components.detectors.fusion_detector.onset_refine import _spectral_flux, local_flux_ratio
 
     sr = 44100
     duration = 3.0
@@ -670,7 +671,7 @@ def test_shot_calibration_marks_hit_miss_and_fp():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.shot_calib import (
+    from haptic_gt.components.detectors.fusion_detector.shot_calib import (
         calibrate_shot_times,
         format_shot_calibration_table,
         scan_shot_attacks,
@@ -721,7 +722,7 @@ def test_shot_calibration_marks_hit_miss_and_fp():
 
 
 def test_debug_events_table():
-    from haptic_gt.context.debug_events import EventDebugRow, format_events_table
+    from haptic_gt.components.detectors.fusion_detector.debug_events import EventDebugRow, format_events_table
 
     rows = [
         EventDebugRow(
@@ -765,7 +766,7 @@ def test_late_decay_report_snaps_to_the_muzzle():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_nms import snap_impulsive_peaks_to_attacks
+    from haptic_gt.components.detectors.fusion_detector.impulsive_nms import snap_impulsive_peaks_to_attacks
 
     tax = load_taxonomy()
     sr = 22050
@@ -805,7 +806,7 @@ def test_snap_prefers_earlier_muzzle_over_louder_boom():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_nms import snap_impulsive_peaks_to_attacks
+    from haptic_gt.components.detectors.fusion_detector.impulsive_nms import snap_impulsive_peaks_to_attacks
 
     tax = load_taxonomy()
     sr = 22050
@@ -835,7 +836,7 @@ def test_snap_does_not_steal_the_previous_volley_shot():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_nms import snap_impulsive_peaks_to_attacks
+    from haptic_gt.components.detectors.fusion_detector.impulsive_nms import snap_impulsive_peaks_to_attacks
 
     tax = load_taxonomy()
     with tempfile.TemporaryDirectory() as td:
@@ -861,7 +862,7 @@ def test_accents_closer_than_min_distance_collapse_to_the_stronger():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_nms import suppress_impulsive_overlaps
+    from haptic_gt.components.detectors.fusion_detector.impulsive_nms import suppress_impulsive_overlaps
 
     tax = load_taxonomy()
     with tempfile.TemporaryDirectory() as td:
@@ -887,7 +888,7 @@ def test_accent_spans_are_trimmed_so_they_do_not_overlap():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_nms import suppress_impulsive_overlaps
+    from haptic_gt.components.detectors.fusion_detector.impulsive_nms import suppress_impulsive_overlaps
 
     tax = load_taxonomy()
     with tempfile.TemporaryDirectory() as td:
@@ -909,7 +910,7 @@ def test_accent_spans_are_trimmed_so_they_do_not_overlap():
 
 
 def test_visual_flash_onsets_ignore_cuts_and_keep_orange_jumps():
-    from haptic_gt.context.visual_flash import flashes_from_frame_metrics
+    from haptic_gt.components.detectors.fusion_detector.visual_flash import flashes_from_frame_metrics
 
     fps = 30.0
     n = 90
@@ -937,7 +938,7 @@ def test_visual_flash_onsets_ignore_cuts_and_keep_orange_jumps():
 
 
 def test_visual_flash_snaps_keeps_and_promotes():
-    from haptic_gt.context.visual_flash import align_impulsive_events_to_flashes
+    from haptic_gt.components.detectors.fusion_detector.visual_flash import align_impulsive_events_to_flashes
 
     tax = load_taxonomy()
     out = align_impulsive_events_to_flashes(
@@ -972,7 +973,7 @@ def test_rumble_bed_survives_a_shot_fired_inside_it():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+    from haptic_gt.components.detectors.fusion_detector.impulsive_promote import promote_impulsive_transients
 
     tax = load_taxonomy()
     scores = [
@@ -1019,8 +1020,8 @@ def test_events_json_reports_attack_strength():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.detector import EventResult
-    from haptic_gt.context.impulsive_nms import measure_impulsive_attacks
+    from haptic_gt.components.detectors.fusion_detector.detector import EventResult
+    from haptic_gt.components.detectors.fusion_detector.impulsive_nms import measure_impulsive_attacks
 
     tax = load_taxonomy()
     with tempfile.TemporaryDirectory() as td:

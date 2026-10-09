@@ -34,6 +34,7 @@ scripts/_nb_size.py
 papers/
 sample start for main flow/
 sound2hap/
+!third_party/sound2hap/
 sample/
 vibrator-android/
 # Local experiment artifacts (keep .tex docs)

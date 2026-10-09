@@ -8,12 +8,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from haptic_gt.pipeline import generate_candidate_tracks
+from haptic_gt.core.config import load_pipeline_config
+from haptic_gt.core.runner import run_pipeline
 
 VIDEO = ROOT / "sample" / "war_tank_001.mp4"
 OUT = ROOT / "output" / "war_tank_001"
 ANDROID_ASSETS = ROOT / "vibrator-android" / "app" / "src" / "main" / "assets" / "demo"
 COLAB_EVENTS = Path(r"c:\Users\senir\Downloads\haptic_candidates (29)\events.json")
+GATE_CATEGORIES = ["gunshot", "explosion", "smash", "car_crash", "vehicle"]
 
 
 def _panns_ready() -> bool:
@@ -26,42 +28,32 @@ def main() -> int:
         print("missing video:", VIDEO)
         return 1
 
-    OUT.mkdir(parents=True, exist_ok=True)
-    print("running pipeline on", VIDEO)
-    kwargs: dict = dict(
-        from_video=True,
-        content_type="game",
-        gate_categories=["gunshot", "explosion", "smash", "car_crash", "vehicle"],
-    )
     if _panns_ready():
-        kwargs["enable_context_detection"] = True
+        detector = {"name": "fusion_detector", "params": {"gate_categories": GATE_CATEGORIES}}
         print("PANNs checkpoint ready — detecting on this PC")
     elif COLAB_EVENTS.exists():
-        kwargs["enable_context_detection"] = False
-        kwargs["manual_events"] = COLAB_EVENTS
+        detector = {
+            "name": "manual_events",
+            "params": {"events": str(COLAB_EVENTS), "gate_categories": GATE_CATEGORIES},
+        }
         print("PANNs checkpoint not downloaded yet — stitching A–D from last Colab events.json")
     else:
         print("need PANNs checkpoint (~300 MB) or a Colab events.json")
         return 1
 
-    tracks = generate_candidate_tracks(VIDEO, OUT, **kwargs)
-    print("events json:", tracks.events_json)
-    print("no_haptic_events:", tracks.no_haptic_events)
-    saved = tracks.save_all()
+    print("running pipeline on", VIDEO)
+    config = load_pipeline_config(overrides={"detector": detector})
+    result = run_pipeline(config, VIDEO, OUT)
+    print("events json:", result.events_json)
+    print("no_haptic_events:", result.no_haptic_events)
+    saved = result.save_all()
     for name, path in saved.items():
         print(" ", name, path)
 
     ANDROID_ASSETS.mkdir(parents=True, exist_ok=True)
-    copies = {
-        "video.mp4": VIDEO,
-        "events.json": OUT / "events.json",
-        "algorithm_a_perception_mapping.wav": OUT / "algorithm_a_perception_mapping.wav",
-        "algorithm_b_frequency_shifting.wav": OUT / "algorithm_b_frequency_shifting.wav",
-        "algorithm_c_pitch_matching.wav": OUT / "algorithm_c_pitch_matching.wav",
-        "algorithm_d_haptic_gen.wav": OUT / "algorithm_d_haptic_gen.wav",
-        "algorithm_e_rule_based.wav": OUT / "algorithm_e_rule_based.wav",
-        "algorithm_e_rule_based.json": OUT / "algorithm_e_rule_based.json",
-    }
+    copies = {"video.mp4": VIDEO, **{path.name: path for path in result.outputs.values()}}
+    if result.events_json is not None:
+        copies["events.json"] = result.events_json
     for dest_name, src in copies.items():
         if not src.exists():
             print("skip missing", src)

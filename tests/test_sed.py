@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from haptic_gt.context.sed_events import (
+from haptic_gt.components.detectors.fusion_detector.sed_events import (
     events_from_frame_posteriors,
     hysteresis_segments,
     median_filter,
     split_impulsive_by_posterior_peaks,
 )
-from haptic_gt.context.sed_frames import FramePosteriors, posteriors_to_encoder_scores
-from haptic_gt.context.taxonomy import load_taxonomy
-from haptic_gt.eval.sed_metrics import (
+from haptic_gt.components.detectors.fusion_detector.sed_frames import FramePosteriors, posteriors_to_encoder_scores
+from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy
+from haptic_gt.components.detectors.fusion_detector.sed_metrics import (
     RefEvent,
     evaluate_events,
     event_based_prf,
@@ -101,7 +101,7 @@ def test_split_impulsive_volley_into_separate_shots():
 
 
 def test_posteriors_to_encoder_scores_uses_mappable_labels():
-    from haptic_gt.context.taxonomy import match_label_to_category
+    from haptic_gt.components.detectors.fusion_detector.taxonomy import match_label_to_category
 
     tax = load_taxonomy()
     frames = _frames({"vehicle": np.array([0.4, 0.5]), "explosion": np.array([0.0, 0.7])})
@@ -156,12 +156,12 @@ def test_sed_chain_on_mixed_tank_and_cannon_clip():
 
     import soundfile as sf
 
-    from haptic_gt.context.frozen_fusion import dedupe_events_by_peak
-    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
-    from haptic_gt.context.onset_refine import refine_event_timing
-    from haptic_gt.context.rumble_filter import filter_sustained_rumble_bursts
-    from haptic_gt.context.sed_frames import posteriors_to_encoder_scores
-    from haptic_gt.context.sustained_merge import merge_sustained_events
+    from haptic_gt.components.detectors.fusion_detector.frozen_fusion import dedupe_events_by_peak
+    from haptic_gt.components.detectors.fusion_detector.impulsive_promote import promote_impulsive_transients
+    from haptic_gt.components.detectors.fusion_detector.onset_refine import refine_event_timing
+    from haptic_gt.components.detectors.fusion_detector.rumble_filter import filter_sustained_rumble_bursts
+    from haptic_gt.components.detectors.fusion_detector.sed_frames import posteriors_to_encoder_scores
+    from haptic_gt.components.detectors.fusion_detector.sustained_merge import merge_sustained_events
 
     tax = load_taxonomy()
     sr = 44100
@@ -309,8 +309,8 @@ def test_volley_shot_in_a_decay_tail_is_still_found():
 
     import soundfile as sf
 
-    from haptic_gt.context.encoders import EncoderScore
-    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+    from haptic_gt.components.detectors.fusion_detector.encoders import EncoderScore
+    from haptic_gt.components.detectors.fusion_detector.impulsive_promote import promote_impulsive_transients
 
     tax = load_taxonomy()
     sr = 22050
@@ -369,8 +369,8 @@ def _promote_on(audio, sr: int):
 
     import soundfile as sf
 
-    from haptic_gt.context.encoders import EncoderScore
-    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+    from haptic_gt.components.detectors.fusion_detector.encoders import EncoderScore
+    from haptic_gt.components.detectors.fusion_detector.impulsive_promote import promote_impulsive_transients
 
     scores = [
         EncoderScore(time_sec=float(t), label="Explosion", score=0.45, source="audio")
@@ -410,8 +410,8 @@ def test_quieter_camera_angle_stays_part_of_the_same_rumble():
 
     import soundfile as sf
 
-    from haptic_gt.context.frozen_fusion import DetectedEvent
-    from haptic_gt.context.rumble_filter import filter_sustained_rumble_bursts
+    from haptic_gt.components.detectors.fusion_detector.frozen_fusion import DetectedEvent
+    from haptic_gt.components.detectors.fusion_detector.rumble_filter import filter_sustained_rumble_bursts
 
     tax = load_taxonomy()
     sr = 22050

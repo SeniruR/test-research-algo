@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from haptic_gt.algorithms.rule_based import (
+from haptic_gt.components.generators.e_rule_based.rule_based import (
     MIN_INTENSITY,
     mix_window,
     process_file,

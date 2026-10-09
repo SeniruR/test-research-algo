@@ -1,0 +1,39 @@
+# Which components run, and with what parameters.
+#
+# Components are folders under haptic_gt/components/detectors/ and
+# haptic_gt/components/generators/. To swap one out, add or remove its folder
+# and change its line here; nothing in haptic_gt/core needs editing.
+
+# One context detector (or null to skip detection: then only generators with
+# input "full_mix", such as e_rule_based, produce output).
+detector:
+  name: fusion_detector
+  params:
+    use_qwen: null              # scene labels in the video branch; null = taxonomy default
+    gate_categories: null       # null = categories with include_in_haptic_gate in taxonomy.yaml
+    manual_rumble_peaks: null   # e.g. [3.2, 7.9] to replace auto vehicle spans
+
+# Alternative: hand-labelled events instead of detection.
+# detector:
+#   name: manual_events
+#   params:
+#     events: path/to/events.json
+#     gate_categories: [gunshot, explosion, vehicle]
+
+# Haptic generators, one WAV each. The Android app has five compare slots (a-e)
+# and matches files named algorithm_<slot>_*.wav.
+generators:
+  - name: a_perception_mapping
+    params: { content: game }   # "game" (games/movies) or "music"
+  - name: b_frequency_shifting
+  - name: c_pitch_matching
+    params: { iso532_loudness: false }  # true: real ISO 532-1 loudness via MoSQITo (slower)
+  - name: d_haptic_gen
+  - name: e_rule_based
+
+# How event-driven generator output is laid onto the timeline.
+synthesis:
+  continuous:
+    enabled: false              # true adds a low-level bed between event accents
+  sustained_mask_min_events: 3
+  sustained_mask_min_coverage: 0.15
