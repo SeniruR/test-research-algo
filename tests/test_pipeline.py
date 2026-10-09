@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile
 
 import numpy as np
+import pytest
 import soundfile as sf
 
 from haptic_gt.components.detectors.fusion_detector.frozen_fusion import DetectedEvent
@@ -121,16 +124,17 @@ def test_candidate_archive_separates_playback_and_debug_artifacts():
         calibration.write_text("{}", encoding="utf-8")
 
         archive_path = root / "haptic_candidates.zip"
-        write_candidate_archive(
-            {
-                "algorithm_a_perception_mapping": wav,
-                "events_json": events,
-                "source_audio": source,
-            },
-            video,
-            archive_path,
-            output_dir=output_dir,
-        )
+        with pytest.warns(UserWarning, match="original video"):
+            write_candidate_archive(
+                {
+                    "algorithm_a_perception_mapping": wav,
+                    "events_json": events,
+                    "source_audio": source,
+                },
+                video,
+                archive_path,
+                output_dir=output_dir,
+            )
 
         with ZipFile(archive_path) as archive:
             names = set(archive.namelist())
@@ -142,6 +146,43 @@ def test_candidate_archive_separates_playback_and_debug_artifacts():
             "debug/audio_preparation/source_audio.wav",
             "debug/pipeline/calibration/rumble_report.json",
         }
+
+
+def _top_level_mp4_boxes(data: bytes) -> list[bytes]:
+    kinds, pos = [], 0
+    while pos + 8 <= len(data):
+        size = int.from_bytes(data[pos : pos + 4], "big")
+        kinds.append(data[pos + 4 : pos + 8])
+        if size == 1:
+            size = int.from_bytes(data[pos + 8 : pos + 16], "big")
+        pos += size or len(data)
+    return kinds
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_candidate_archive_rewrites_fragmented_video_as_seekable_mp4():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        video = root / "clip.mp4"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y",
+             "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=2",
+             "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+             "-shortest", "-movflags", "frag_keyframe+empty_moov", str(video)],
+            check=True,
+        )
+        assert b"moof" in _top_level_mp4_boxes(video.read_bytes())
+        wav = root / "algorithm_a_perception_mapping.wav"
+        _write_test_wav(wav, duration=2.0)
+
+        archive_path = write_candidate_archive(
+            {"algorithm_a_perception_mapping": wav}, video, root / "out.zip"
+        )
+
+        with ZipFile(archive_path) as archive:
+            boxes = _top_level_mp4_boxes(archive.read("video.mp4"))
+        assert b"moof" not in boxes
+        assert boxes.index(b"moov") < boxes.index(b"mdat")
 
 
 def test_stitch_algorithm_output_full_length():

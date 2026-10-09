@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import tempfile
+import warnings
 from pathlib import Path
 from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from haptic_gt.core.audio_io import remux_to_seekable_mp4
 from haptic_gt.core.contracts import DetectionResult
 
 SOURCE_AUDIO_NAME = "source_audio.wav"
@@ -75,10 +78,15 @@ def write_candidate_archive(
         raise ValueError("No generated haptic WAV files are available to package")
 
     archive_path.parent.mkdir(parents=True, exist_ok=True)
-    video_arcname = f"video{video_path.suffix.lower()}"
     archived_paths = {video_path.resolve()}
-    with ZipFile(archive_path, "w", compression=ZIP_DEFLATED) as archive:
-        archive.write(video_path, video_arcname)
+    with ZipFile(archive_path, "w", compression=ZIP_DEFLATED) as archive, \
+            tempfile.TemporaryDirectory() as tmp:
+        try:
+            app_video = remux_to_seekable_mp4(video_path, Path(tmp) / "video.mp4")
+        except RuntimeError as exc:
+            warnings.warn(f"Packaging the original video; remux failed: {exc}")
+            app_video = video_path
+        archive.write(app_video, f"video{app_video.suffix.lower()}")
         for path in playback_outputs.values():
             archive.write(path, path.name)
             archived_paths.add(path.resolve())

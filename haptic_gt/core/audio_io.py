@@ -57,6 +57,28 @@ def extract_audio_from_video(
     return output_path
 
 
+def remux_to_seekable_mp4(video_path: str | Path, output_path: str | Path) -> Path:
+    """Losslessly rewrite a video as a regular (non-fragmented) MP4.
+
+    Fragmented MP4s without a sidx index, which many downloaders produce, report
+    no duration and cannot be seeked in ExoPlayer, so the app could not track or
+    scrub them.
+    """
+    ffmpeg = _require_ffmpeg()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        ffmpeg, "-y", "-i", str(video_path),
+        "-map", "0:v?", "-map", "0:a?", "-c", "copy",
+        "-movflags", "+faststart", str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        output_path.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg remux failed:\n{result.stderr}")
+    return output_path
+
+
 def prepare_source_wav(
     audio_path: str | Path,
     output_path: str | Path,
