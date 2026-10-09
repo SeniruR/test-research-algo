@@ -223,7 +223,9 @@ everything else under `debug/`.
 1. Open [`notebooks/haptic_groundtruth_colab.ipynb`](notebooks/haptic_groundtruth_colab.ipynb)
    in Colab; **Runtime → Change runtime type → T4 GPU**.
 2. For a private repo, add a `GITHUB_TOKEN` secret (key icon).
-3. Run the cells in order: clone + verify Sound2Hap, install, choose
+3. Run the cells in order: clone + verify Sound2Hap, install, fetch the PANNs
+   model (downloaded once from Zenodo, MD5-checked, then cached in your Google
+   Drive at `MyDrive/haptic-groundtruth/models/`), choose
    components (`OVERRIDES`), upload a video, run, inspect the timeline, listen,
    download the ZIP.
 
