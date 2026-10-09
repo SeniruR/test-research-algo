@@ -129,6 +129,9 @@ visual_flash_min_sep_sec: 0.45
 # audio attack that had no AST score; a scene never adds an event by itself.
 # vehicle and engine_start scenes only label events.
 visual_scenes_enabled: true
+# With use_qwen left unset, scenes only run on a GPU with at least this much
+# memory. The 7B model in bf16 needs a 24 GB L4; a 16 GB T4 runs out of memory.
+visual_scenes_min_gpu_gb: 20
 visual_scene_backing: true
 # Only a scene this short may back an attack. War tank: a 4.4 s "explosion"
 # scene kept the fireball on screen while the sound decayed, and backing

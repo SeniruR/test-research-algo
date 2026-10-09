@@ -36,6 +36,24 @@ PROMPT = (
 )
 
 
+def default_use_qwen(taxonomy: Taxonomy) -> tuple[bool, str]:
+    """Whether scene labels run when the caller did not say, and why."""
+    if not taxonomy.visual_scenes_enabled:
+        return False, "visual_scenes_enabled is false in the taxonomy"
+    try:
+        import torch
+    except ImportError:
+        return False, "torch is not installed"
+    if not torch.cuda.is_available():
+        return False, "no CUDA GPU"
+    props = torch.cuda.get_device_properties(0)
+    gb = props.total_memory / 1024**3
+    need = taxonomy.visual_scenes_min_gpu_gb
+    if gb < need:
+        return False, f"{props.name} has {gb:.0f} GB, Qwen needs {need:g} GB (set use_qwen: true to force)"
+    return True, f"{props.name} has {gb:.0f} GB"
+
+
 @dataclass
 class VisualSpan:
     category: str

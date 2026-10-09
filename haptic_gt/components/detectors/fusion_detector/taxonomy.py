@@ -103,6 +103,7 @@ class Taxonomy:
     visual_flash_min_sep_sec: float = 0.45
     # Scene labels from the picture (Qwen2.5-VL), video branch
     visual_scenes_enabled: bool = True
+    visual_scenes_min_gpu_gb: float = 20.0
     visual_scene_backing: bool = True
     visual_scene_backing_max_sec: float = 2.0
     visual_scene_model: str = "Qwen/Qwen2.5-VL-7B-Instruct"
@@ -242,6 +243,7 @@ def load_taxonomy(path: str | Path | None = None) -> Taxonomy:
         visual_flash_match_sec=float(raw.get("visual_flash_match_sec", 0.50)),
         visual_flash_min_sep_sec=float(raw.get("visual_flash_min_sep_sec", 0.45)),
         visual_scenes_enabled=bool(raw.get("visual_scenes_enabled", True)),
+        visual_scenes_min_gpu_gb=float(raw.get("visual_scenes_min_gpu_gb", 20.0)),
         visual_scene_backing=bool(raw.get("visual_scene_backing", True)),
         visual_scene_backing_max_sec=float(raw.get("visual_scene_backing_max_sec", 2.0)),
         visual_scene_model=str(raw.get("visual_scene_model", "Qwen/Qwen2.5-VL-7B-Instruct")),

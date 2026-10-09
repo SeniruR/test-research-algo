@@ -185,8 +185,11 @@ Categories, gate defaults and every threshold live in
 Audio branch: framewise sound-event detection with PANNs (`panns-inference`,
 ~10 ms frames) or dense AST (`MIT/ast-finetuned-audioset-10-10-0.4593`) as
 fallback, sharpened with spectral-flux onsets. Video branch: orange
-muzzle/explosion flash scan, plus optional Qwen2.5-VL scene labels (`use_qwen`;
-needs an L4-class GPU). Params: `gate_categories`, `use_qwen`, `full_scan`,
+muzzle/explosion flash scan, plus optional Qwen2.5-VL scene labels. With
+`use_qwen: null` (the default) Qwen runs only on a GPU with at least
+`visual_scenes_min_gpu_gb` (20 GB) of memory, so it is skipped on a T4 or CPU
+and runs on an L4 or A100; `true` or `false` forces it. The choice and the reason
+are printed and recorded under `detector` in `events.json`. Params: `gate_categories`, `use_qwen`, `full_scan`,
 `manual_rumble_peaks` (replace auto vehicle spans with hand-marked times),
 `taxonomy_path`.
 

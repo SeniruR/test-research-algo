@@ -20,6 +20,7 @@ from .frozen_fusion import DetectedEvent
 from .manual_events import vehicle_events_from_peaks
 from .mask import resolve_gate_categories
 from .taxonomy import Taxonomy, load_taxonomy
+from .visual_scenes import default_use_qwen
 
 DETECTOR_EVENTS_NAME = "detector_events.json"
 
@@ -75,7 +76,8 @@ class Component:
         """
         ``gate_categories``: categories that drive the haptics (default: those with
         ``include_in_haptic_gate`` in the taxonomy). ``use_qwen``: scene labels in
-        the video branch (default: ``visual_scenes_enabled``). ``manual_rumble_peaks``:
+        the video branch (default: on only with ``visual_scenes_enabled`` and a GPU
+        of at least ``visual_scenes_min_gpu_gb``, so off on a T4). ``manual_rumble_peaks``:
         hand-marked rumble times that replace auto-detected ``vehicle`` spans.
         """
         self.taxonomy_path = taxonomy_path
@@ -99,6 +101,12 @@ class Component:
             report = {"detector": {"mode": "skipped", "reason": "needs a video input"}, **report}
             return DetectionResult(events=[], report=report)
 
+        if self.use_qwen is None:
+            use_qwen, qwen_reason = default_use_qwen(taxonomy)
+        else:
+            use_qwen, qwen_reason = self.use_qwen, "set in pipeline params"
+        print(f"Qwen scene labels: {'on' if use_qwen else 'off'} ({qwen_reason})")
+
         result = detect_events(
             video_path,
             source_wav,
@@ -107,14 +115,14 @@ class Component:
             write_gated=False,
             gate_categories=self.gate_categories,
             full_scan=self.full_scan,
-            use_qwen=self.use_qwen,
+            use_qwen=use_qwen,
         )
         events = result.events
         if self.manual_rumble_peaks:
             events = replace_vehicle_with_manual_peaks(events, self.manual_rumble_peaks, taxonomy)
 
         report = {
-            "detector": result.detector_info,
+            "detector": {**result.detector_info, "qwen_scenes": use_qwen, "qwen_reason": qwen_reason},
             "sustained_gate": result.sustained_gate,
             **report,
         }

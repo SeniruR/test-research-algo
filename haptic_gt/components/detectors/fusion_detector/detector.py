@@ -35,6 +35,7 @@ from .sustained_merge import merge_sustained_events
 from .taxonomy import load_taxonomy
 from .tokenization import tokenize_video_audio
 from .visual_flash import align_impulsive_events_to_flashes
+from .visual_scenes import default_use_qwen
 
 EVENTS_JSON_NAME = "events.json"
 GATED_AUDIO_NAME = "gated_audio.wav"
@@ -133,7 +134,8 @@ def detect_events(
     only) and the video branch (orange flashes + optional Qwen scene labels,
     video only) run independently, then ``fuse_branches`` joins them →
     events.json → optional gated_audio.wav. ``use_qwen`` defaults to
-    ``visual_scenes_enabled`` in the taxonomy.
+    ``visual_scenes_enabled`` in the taxonomy, and only on a GPU with
+    ``visual_scenes_min_gpu_gb`` of memory (so not on a T4).
 
     Legacy path (``full_scan`` or ``sed_enabled: false``): sparse onset proposals →
     window tagging → frozen fusion. Kept for comparison; its onsets are only as
@@ -147,7 +149,7 @@ def detect_events(
 
     if taxonomy.sed_enabled and not full_scan:
         if use_qwen is None:
-            use_qwen = taxonomy.visual_scenes_enabled
+            use_qwen, _reason = default_use_qwen(taxonomy)
         return _detect_via_branches(
             source_wav=source_wav,
             video_path=video_path,

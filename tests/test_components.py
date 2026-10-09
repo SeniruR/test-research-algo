@@ -356,6 +356,36 @@ def test_iso532_adapter_matches_what_upstream_reads_and_restores_it():
     assert not hasattr(module, "loudness_zwtv")
 
 
+@pytest.mark.parametrize(
+    ("cuda", "gpu", "gb", "enabled", "expected"),
+    [
+        (True, "Tesla T4", 15.0, True, False),
+        (True, "NVIDIA L4", 22.5, True, True),
+        (True, "NVIDIA A100-SXM4-40GB", 39.6, True, True),
+        (False, None, 0.0, True, False),
+        (True, "NVIDIA L4", 22.5, False, False),
+    ],
+)
+def test_qwen_defaults_off_on_small_gpus(monkeypatch, cuda, gpu, gb, enabled, expected):
+    torch = pytest.importorskip("torch")
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy
+    from haptic_gt.components.detectors.fusion_detector.visual_scenes import default_use_qwen
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_properties",
+        lambda _i: SimpleNamespace(name=gpu, total_memory=int(gb * 1024**3)),
+    )
+    tax = replace(load_taxonomy(), visual_scenes_enabled=enabled)
+    use_qwen, reason = default_use_qwen(tax)
+    assert use_qwen is expected
+    assert reason
+
+
 def test_fusion_detector_skips_without_video(tmp_path):
     detector = load_detector("fusion_detector")
     result = detector.detect(None, tmp_path / "unused.wav", tmp_path)
