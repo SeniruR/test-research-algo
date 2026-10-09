@@ -35,13 +35,17 @@ Hard cases that keep driving the work:
 
 \section{Current stack}
 \begin{enumerate}[leftmargin=*,itemsep=2pt]
-  \item Pull mono sound from the video (44.1\,kHz). Video classification is parked (\texttt{use\_video: false}).
-  \item Frame-level sound event detection (SED): PANNs when installed, otherwise dense AST windows. Decode with median filter + hysteresis, then split volleys at posterior peaks.
-  \item Snap bangs to the earliest sharp spectral-flux attack, then snap again onto the audio boom after a visual flash. A flash may add a bang. It may not drop an audio fire. Promote missed shots from flux (anchor + volley rules). Demote rumble-like false bangs.
+  \item Take the video first and pull mono sound from it (44.1\,kHz). Then run two checks that never see each other's data: a sound check on the soundtrack and a picture check on the frames.
+  \item Sound check: frame-level sound event detection (SED) with PANNs (dense AST if PANNs is missing). Decode with median filter + hysteresis, split volleys at posterior peaks, snap bangs to the earliest sharp spectral-flux attack, promote missed shots from flux (anchor + volley rules), demote rumble-like false bangs.
+  \item Picture check: scan every frame for a sudden orange flash, rejecting cuts and lighting changes (the background must still be the same shot). Measure how long each fire stays on screen. Label each camera shot with a vision-language model (Qwen2.5-VL) only on a GPU with at least 20\,GB; it is skipped on a T4. The old video classifier (ViViT) stays parked.
+  \item Fusion: sound owns start, peak, and end. A flash may move a nearby bang or add one; it may never delete an audio bang. Weaker bangs inside a fire that is still on screen are decay and are dropped. A short scene label may confirm a sharp attack the sound model could not name; it never adds or removes an event on its own.
   \item Gate vehicle rumble on loud RMS islands, with one loudness floor \emph{per scene} so a close car cannot hide a distant drive. Repeated quiet stretches are treated as rhythm (gaps stay quiet); one long quiet stretch is treated as a camera angle (kept).
-  \item Write \texttt{events.json} (includes a \texttt{sustained\_gate} report: floor per scene, dropped spans) and \texttt{gated\_audio.wav}.
-  \item Run Sound2Hap A--D: quiet continuous vibration underneath (bed) plus stronger short hits on top (accents, 25\,ms lead, 45\,ms release between volley hits). Rumble spans follow source loudness and rhythm. The four algorithms themselves are unchanged. On a phone motor with no amplitude control, Event-Trigger fires once per bang: a short spike, or a solid buzz through the peak then a coarse fade.
+  \item Write \texttt{events.json} (with a \texttt{fusion} report of what each step changed), \texttt{visual\_context.json}, and \texttt{gated\_audio.wav}.
+  \item Run the unmodified Sound2Hap A--D files (checked by SHA-256 before every run) on each event: short hits with a 25\,ms lead and a 45\,ms release between volley hits. The quiet continuous layer (bed) is now off by default, because the phone motor is on or off only and played the bed as a constant buzz.
+  \item Package one zip named after the video: the video and the WAVs at the top, every other output under \texttt{components/}. The phone app loads the folder and plays the chosen WAV as written; it no longer reads \texttt{events.json}.
 \end{enumerate}
+
+The pipeline is modular: the detector and the generators are separate components listed in \texttt{pipeline.yaml}, so one can be swapped or removed without editing the others.
 
 Scoring (notebook, after generation): \texttt{TRUTH\_SHOT\_TIMES} / \texttt{TRUTH\_RUMBLE\_TIMES} are a grading key for this clip only. Shots get DCASE-style onset-collar F1; rumble gets span coverage. Empty lists mean ``nothing to score'', not a detector failure.
 
@@ -75,6 +79,12 @@ Scoring (notebook, after generation): \texttt{TRUTH\_SHOT\_TIMES} / \texttt{TRUT
   \item Phone code that turns WAV loudness into vibration strength (parser).
   \item Orange jump in the picture used only to nudge a bang onto the flash (visual flash). An audio bang with no flash is kept.
   \item Motor that is only on or off, so softness is made with time and pattern (no amplitude control).
+  \item Two independent checks, one on the soundtrack and one on the frames, joined afterwards (audio branch, video branch, fusion).
+  \item A label for a whole camera shot from a model that reads images and text (scene label, Qwen2.5-VL). It says what is shown, not when a bang happens.
+  \item How long a fire stays on screen after its flash (fireball span). Weaker bangs inside it are the same blast fading.
+  \item Check that the picture before and after a flash is still the same shot, so a cut or a lighting change is not taken for a flash (shot continuity).
+  \item A video saved in pieces with no overall length in its header, so a player cannot show a timeline or seek (fragmented MP4). Rewriting the container without re-encoding fixes it (lossless remux).
+  \item Copies of the original Sound2Hap files kept unchanged in the repo, with a fingerprint of each file to prove it (vendored files, SHA-256).
 \end{itemize}
 
 \section{Experiments}
@@ -292,6 +302,100 @@ Fade the whole blast with 8--12\,ms on/off slices & The decline felt like chatte
 
 Latest phone check on folder 35: each fire is one event, shape logged as decay, and the last shot stays on for about 700\,ms before the fade. A--D differ by how that envelope falls, not by amplitude.
 
+\subsection*{Separate sound and picture checks}
+The detector used to mix sound, video scores, and flashes at several points in one chain, so it was hard to tell which signal changed an event. The clips here were \texttt{Gun\_Shoot\_001} (about 5 minutes) and \texttt{war\_tank\_001}.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{What we tried} & \textbf{Outcome} & \textbf{Changed to / Continued?} \\
+\midrule
+Standalone scene labels from Qwen2.5-VL: one label per shot, shots under 3\,s glued to a neighbour, 1 frame per second & Scene times are camera cuts, not bang times. Only 2 of 27 audio bangs got the same category; fights with guns came out as ``human activity'' & \textbf{Changed to} several labels per shot, no glueing, denser sampling on short shots. Still only context: 5 of 27 matched afterwards \\
+\addlinespace
+Send every short cut to the model as it is & One- or two-frame cuts crashed the model and the saved file had no labels at all & \textbf{Changed to} widen a very short cut only while the model looks (the saved times stay the real cut); one failed shot no longer stops the run \\
+\addlinespace
+ViViT (Kinetics actions) versus Qwen scene labels for context & ViViT never produced a usable score; Qwen can be asked for our own category names & \textbf{Changed to} Qwen as the picture context model; ViViT stays parked \\
+\addlinespace
+One mixed chain: the flash snap ran half-way through the audio steps, and audio detection decoded every video frame at 100 per second & Hard to trace which signal changed an event; tens of GB of frames decoded that audio detection never used & \textbf{Changed to} video in first, then a sound branch (soundtrack only) and a picture branch (flash scan + Qwen), joined in a fusion step that reports what it changed. With Qwen off the war-tank clip gave exactly the same 8 events as before \\
+\addlinespace
+Let a Qwen ``explosion'' scene bring back a sharp attack the sound model rejected & War tank: the 18.1\,s bump in a fading boom came back as a new explosion. The scene was 4.4\,s long and only showed fire still burning & \textbf{Changed to} a scene may confirm an attack only if it is 2\,s or shorter. A new visible blast is still caught by its own flash \\
+\addlinespace
+Categories weather and human activity (thunder, rain, chainsaw); no smash or crash & Not the clips we test; crashes had no category of their own & \textbf{Changed to} gunshot, explosion, smash, car crash (bangs) and vehicle including engine start. Car crash has no sound labels (AudioSet has no car-crash sound, and loose name matching would pull in ``Car'' and ``Crash cymbal''); from sound alone a crash is a smash. Thunder no longer gets its own hit \\
+\addlinespace
+Screen shake as a haptic cue & Nothing in the pipeline detected it (the flash scan looks for orange, Qwen has no shake label) & \textbf{Continued} as a measure of fast frame-to-frame jitter on top of smooth camera motion. Written, not yet connected to fusion \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection*{Phone app plays the WAVs only}
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{What we tried} & \textbf{Outcome} & \textbf{Changed to / Continued?} \\
+\midrule
+App loads the WAVs plus \texttt{events.json}; Load folder silently switches Event-Trigger mode on & The app muted most of each WAV and fired its own punch from the shared event list, so A--D felt the same & \textbf{Changed to} no JSON in the app. It plays the chosen WAV as written. One screen: load folder, video, A--D switch, play controls \\
+\addlinespace
+WAV-only playback with the quiet continuous layer (bed) left on & The phone vibrated all the time: the bed was non-zero in about 98\% of windows, and an on/off motor plays a faint layer as a steady buzz & \textbf{Changed to} bed off by default. A--D hold only the event hits \\
+\addlinespace
+Zip called \texttt{haptic\_candidates} with every output mixed together & Hard to find the right zip; the app had to skip analysis files & \textbf{Changed to} zip named after the video; video + WAVs at the top, everything else under \texttt{components/}, which the app never opens \\
+\addlinespace
+Package the uploaded video as it is & \texttt{Gun\_Shoot\_001} was a fragmented MP4: the app showed no timeline and no vibration, and every seek jumped back to the start & \textbf{Changed to} lossless remux to a normal MP4 when packaging (falls back to the original with a warning if it fails). The app also takes the length from the WAVs if the video has none, and greys out the seek bar with a message when a video cannot seek. A--D lanes are now the same width \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection*{Modular pipeline and Colab}
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{What we tried} & \textbf{Outcome} & \textbf{Changed to / Continued?} \\
+\midrule
+Whole package, including our copies of A--D, written into one generated notebook & Nobody could check that A--D were unchanged, or swap one part without editing the rest & \textbf{Changed to} the original Sound2Hap files kept byte for byte with their licence and SHA-256 sums, checked when the notebook starts. Detector and generators are separate components chosen in \texttt{pipeline.yaml}. The output hashes recorded before the refactor matched after it \\
+\addlinespace
+Run Qwen whenever it is installed & On a T4 (15\,GB) the 7B model does not fit (needs about 20\,GB) & \textbf{Changed to} skip Qwen by default on GPUs under 20\,GB, and say so in \texttt{events.json} \\
+\addlinespace
+Later notebook cells assume the run finished & Running them early gave confusing file errors & \textbf{Changed to} each later cell says clearly that the run step has not finished; uploads go to a separate input folder \\
+\addlinespace
+Download the PANNs model from Zenodo in every session & Many minutes per session on a slow server & \textbf{Changed to} download once, check its MD5, keep a copy in Google Drive \\
+\addlinespace
+Re-run step 1 to pull new code into an open Colab session & Python kept the old modules in memory, so a fixed clip looked unchanged & \textbf{Changed to} step 1 unloads the old pipeline modules after pulling (a session restart also works) \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection*{Decay and light that look like bangs}
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{What we tried} & \textbf{Outcome} & \textbf{Changed to / Continued?} \\
+\midrule
+Treat every sharp bump after a blast as a new bang & War tank: three vibrations from 15\,s, but only the 15\,s blast was real. The fading, clipped boom had bumps at 16.4\,s and 18.1\,s & \textbf{Changed to} while a flash-backed blast's fire is still on screen, weaker explosion or smash events with no flash of their own are dropped as decay. Gunshots are never dropped this way \\
+\addlinespace
+Any sudden jump in orange pixels is a flash & Cuts into an orange shot and lighting changes became bangs (war tank 12.3\,s; picture-only bangs on the gun clip) & \textbf{Changed to} the background before and after must still match (same shot), and just after a cut the new shot must open without orange. War tank keeps its real flashes at 11.57\,s and 14.8\,s. Its event list is now vehicle plus 9.84, 11.00, 11.52, 13.41, and 14.99\,s \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection*{Cartoon clip: music under every sound (Video\_Project\_16)}
+A Tom-and-dog cartoon with constant music. It stressed rules that were tuned on war footage.
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}p{4cm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{What we tried} & \textbf{Outcome} & \textbf{Changed to / Continued?} \\
+\midrule
+Flash rules from the war clips & 16 of 40 bangs had no sound behind them (pink characters, dissolves, lightning, a whoosh). Seven moments had an explosion and a smash on the same attack, which the renderer adds into a double-strength hit. White pixels overflowed the colour check and counted as orange & \textbf{Tried:} a picture-only bang needs a sharp sound attack within 0.15\,s, unless the blast fills half the frame (the 62\,s blast plays over music only); a flash attaches to any bang type; one hit per attack; fixed the colour overflow. Replay: 40 $\to$ 26 bangs, war and gun clips unchanged. \textbf{Rolled back} to the previous version, colour fix included; to revisit \\
+\addlinespace
+Same pipeline on the hits after 1:15 and around 1:28, and a dog bark at 1:21 & Hits missed, bark vibrated. Root cause: PANNs scored every bang label at 0.02 or less for the whole clip (it hears ``Music''), so only the flux fallback ran. That fallback needs a very loud anchor bang within 2\,s or 6$\times$ sharpness; these hits were 3--5$\times$ over the music, or quiet next to the clip's loudest scene. The bark passed both bars, and fade time, noisiness, pitch, and brightness could not tell it from a hit & \textbf{Open.} Raising or lowering bars trades misses for false hits. Candidates: separate the music before detection; judge each attack against its own surroundings when the classifier is blind; Qwen on a larger GPU to confirm hits \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
 \section{Key takeaways}
 \begin{itemize}[leftmargin=*,itemsep=2pt]
   \item Sound2Hap A--D stay as ports of the official scripts. We change context filtering, stitching, and level shaping instead of rewriting the algorithms.
@@ -302,6 +406,12 @@ Latest phone check on folder 35: each fire is one event, shape logged as decay, 
   \item Grading marks must be for \emph{this} clip and must not feed the detector. Empty marks mean nothing to score; a miss with nothing in \texttt{sustained\_gate.dropped} means the classifier never proposed it.
   \item A picture flash may move or add a bang. It must not delete an audio fire that has no flash. Snap to the earliest sharp attack, not the louder boom after it.
   \item On a motor with no amplitude control, do not fake softness with a chopped WAV bed, and do not split one blast into extra taps. One event is one buzz: a short spike, or solid through the peak then a coarse fade.
+  \item Check sound and picture separately, then fuse. Sound owns the timing; a scene label is context for a whole shot and must never time or delete a bang. Scene backing only works on short shots.
+  \item Not every bang after a blast is a new one. Fire that stays on screen and bumps in a fading boom are the same blast.
+  \item A picture flash needs a real shot behind it: cuts, dissolves, and lighting changes are not flashes.
+  \item The app plays the WAVs and nothing else. Anything the app does on top (event punches, a constant bed) erases the differences between A--D.
+  \item Keep A--D provably unchanged (original files plus hashes) and keep the pipeline modular, so a component can be replaced without touching the rest.
+  \item The sound model is the weak point on music-heavy content: when it hears only music, every rule tuned on war footage decides alone. Fixing that is a detection problem, not a threshold problem.
 \end{itemize}
 
 \end{document}
