@@ -101,6 +101,8 @@ class Taxonomy:
     visual_flash_min_d_hot: float = -0.005
     visual_flash_match_sec: float = 0.50
     visual_flash_min_sep_sec: float = 0.45
+    visual_flash_min_continuity: float = 0.85
+    visual_flash_settle_sec: float = 0.25
     # A fireball that stays on screen is one blast: weaker flash-less bangs in it are decay
     visual_fireball_max_sec: float = 4.0
     visual_fireball_gap_sec: float = 0.12
@@ -246,6 +248,8 @@ def load_taxonomy(path: str | Path | None = None) -> Taxonomy:
         visual_flash_min_d_hot=float(raw.get("visual_flash_min_d_hot", -0.005)),
         visual_flash_match_sec=float(raw.get("visual_flash_match_sec", 0.50)),
         visual_flash_min_sep_sec=float(raw.get("visual_flash_min_sep_sec", 0.45)),
+        visual_flash_min_continuity=float(raw.get("visual_flash_min_continuity", 0.85)),
+        visual_flash_settle_sec=float(raw.get("visual_flash_settle_sec", 0.25)),
         visual_fireball_max_sec=float(raw.get("visual_fireball_max_sec", 4.0)),
         visual_fireball_gap_sec=float(raw.get("visual_fireball_gap_sec", 0.12)),
         visual_fireball_decay_categories=tuple(

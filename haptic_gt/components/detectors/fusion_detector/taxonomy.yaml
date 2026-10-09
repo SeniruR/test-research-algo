@@ -121,6 +121,17 @@ visual_flash_min_warm: 0.025
 visual_flash_min_d_hot: -0.005
 visual_flash_match_sec: 0.50
 visual_flash_min_sep_sec: 0.45
+# A flash must happen inside one shot: the background outside the fire has to
+# match before and after (correlation of blurred luma). Gun_Shoot: 13 cuts to
+# sunset-lit shots and a red end card read as explosions; they match at
+# 0.20-0.66 (the red card leaves no background at all). Real fireballs, grainy
+# handheld war footage included, match at 0.97-1.0.
+visual_flash_min_continuity: 0.85
+# Within this long after a cut, a flash also has to start from a shot that
+# opened without orange. War tank: the 12.2 s cut opens on a fireball that is
+# still filling in and read as a new flash at 12.37; the 11.57 muzzle flash,
+# 0.1 s into a shot that opened with none, is kept.
+visual_flash_settle_sec: 0.25
 # A fireball that stays on screen is one blast. War tank: the 14.8 s fireball
 # grows unbroken until the clip ends at 18.7 s, and the clipped soundtrack's
 # decay bumps at 16.4 s and 18.1 s read as two more explosions (sharpness 3.1

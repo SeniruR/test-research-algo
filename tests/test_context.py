@@ -937,6 +937,36 @@ def test_visual_flash_onsets_ignore_cuts_and_keep_orange_jumps():
     assert abs(flashes[1] - 2.2) < 0.04, flashes
 
 
+def test_orange_from_a_cut_is_not_a_flash():
+    """Gun_Shoot: cuts to sunset-lit shots read as 13 explosions."""
+    from haptic_gt.components.detectors.fusion_detector.visual_flash import flashes_from_frame_metrics
+
+    fps = 25.0
+    n = 250
+    times = np.arange(n, dtype=np.float64) / fps
+    warm = np.zeros(n)
+    hot = np.zeros(n)
+    continuity = np.ones(n)
+    # 2.0 s: cut to a sunset shot -> orange arrives with the cut.
+    continuity[49:51] = 0.3
+    warm[50:100] = 0.10
+    # 4.0 s: cut to a dark shot, muzzle flash 0.12 s in (war tank 11.57).
+    continuity[99:101] = -0.4
+    warm[103] = 0.13
+    # 6.0 s: cut into a fireball still filling in (war tank 12.2 -> 12.37).
+    continuity[149:152] = 0.6
+    warm[152:200] = np.linspace(0.06, 0.14, 48)
+    warm[155:200] += 0.04
+    # 9.0 s: fireball inside a steady shot (war tank 14.8).
+    warm[225:] = 0.06
+    flashes = flashes_from_frame_metrics(
+        times, warm, hot,
+        min_d_warm=0.025, min_warm=0.025, min_d_hot=-0.005, min_sep_sec=0.45,
+        continuity=continuity, min_continuity=0.85, settle_sec=0.25,
+    )
+    assert [round(f, 2) for f in flashes] == [4.12, 9.0], flashes
+
+
 def test_visual_flash_snaps_keeps_and_promotes():
     from haptic_gt.components.detectors.fusion_detector.visual_flash import align_impulsive_events_to_flashes
 

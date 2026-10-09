@@ -112,10 +112,9 @@ def run_video_branch(
         scan = scan_fire_pixels(video_path)
         result.flashes = flashes_from_scan(scan, taxonomy)
         if scan is not None:
-            times, warm, _hot = scan
             result.fireballs = fireball_spans(
-                times,
-                warm,
+                scan.times,
+                scan.warm,
                 result.flashes,
                 min_warm=taxonomy.visual_flash_min_warm,
                 max_sec=taxonomy.visual_fireball_max_sec,

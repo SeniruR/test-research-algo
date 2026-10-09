@@ -8,7 +8,9 @@ ViViT: it finds frames where orange/fire pixels suddenly appear.
 
 from __future__ import annotations
 
+from collections import deque
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 
@@ -16,6 +18,24 @@ from .frozen_fusion import DetectedEvent
 from .taxonomy import Taxonomy, load_taxonomy
 
 _IMPULSIVE = frozenset({"explosion", "gunshot"})
+
+
+class FireScan(NamedTuple):
+    times: np.ndarray
+    #: Fraction of orange pixels, and of bright pixels, per frame.
+    warm: np.ndarray
+    hot: np.ndarray
+    #: How well the non-orange background before a frame matches the one after
+    #: it (correlation of blurred luma); NaN where too little background is left.
+    continuity: np.ndarray
+
+
+#: Thumbnail size the scan works at, and the blur that hides film grain so that
+#: shaky, grainy footage still reads as one shot.
+_SCAN_SIZE = (160, 90)
+_GRAIN_BLUR = (9, 9)
+#: Below this fraction of background (outside the fire) a cut cannot be told apart.
+_MIN_BACKGROUND_FRAC = 0.15
 
 
 def flashes_from_frame_metrics(
@@ -27,15 +47,36 @@ def flashes_from_frame_metrics(
     min_warm: float,
     min_d_hot: float,
     min_sep_sec: float,
+    continuity: np.ndarray | None = None,
+    min_continuity: float = 0.0,
+    settle_sec: float = 0.0,
 ) -> list[float]:
-    """Return onset times of orange flashes, strongest first then spaced."""
+    """Return onset times of orange flashes, strongest first then spaced.
+
+    With ``continuity``, an orange jump only counts when the shot carries on
+    through it: a cut to a sunset or a red title card brings orange in too.
+    Within ``settle_sec`` after a cut, a jump also has to start from a shot that
+    opened without orange; otherwise it is the cut's own fire filling in, not a
+    new flash (a muzzle flash 0.1 s into a new shot still counts).
+    """
     if times.size == 0:
         return []
     d_warm = np.diff(warm, prepend=float(warm[0]))
     d_hot = np.diff(hot, prepend=float(hot[0]))
-    idxs = np.flatnonzero(
-        (d_warm >= min_d_warm) & (warm >= min_warm) & (d_hot >= min_d_hot)
-    )
+    candidate = (d_warm >= min_d_warm) & (warm >= min_warm) & (d_hot >= min_d_hot)
+    if continuity is not None:
+        steady = np.nan_to_num(continuity, nan=-1.0) >= min_continuity
+        dt = float(np.median(np.diff(times))) if times.size > 1 else 1.0
+        settle = max(0, int(round(settle_sec / dt))) if dt > 0 else 0
+        broken = np.flatnonzero(~steady)
+        for i in np.flatnonzero(candidate):
+            if not steady[i]:
+                candidate[i] = False
+                continue
+            j = np.searchsorted(broken, i) - 1
+            if j >= 0 and broken[j] >= i - settle and warm[broken[j] + 1] >= min_warm:
+                candidate[i] = False
+    idxs = np.flatnonzero(candidate)
     ranked = sorted(
         ((float(d_warm[i]), float(times[i])) for i in idxs),
         reverse=True,
@@ -49,10 +90,34 @@ def flashes_from_frame_metrics(
     return kept
 
 
-def scan_fire_pixels(
-    video_path: str | Path,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-    """Per-frame times, orange-pixel fraction and bright-pixel fraction."""
+def background_continuity(
+    before_luma: np.ndarray,
+    before_warm: np.ndarray,
+    after_luma: np.ndarray,
+    after_warm: np.ndarray,
+) -> float:
+    """Correlation of the blurred luma outside the fire in two frames.
+
+    A fireball lights up and covers part of a shot but leaves the rest of it in
+    place (0.97-1.0 measured, grainy handheld film included); a cut replaces it
+    (0.2-0.66 on cuts to sunset-lit shots). Correlation ignores the brightness
+    change the fire itself causes.
+    """
+    import cv2
+
+    keep = ~(before_warm | after_warm)
+    keep = cv2.erode(keep.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+    if keep.mean() < _MIN_BACKGROUND_FRAC:
+        return float("nan")
+    a = cv2.GaussianBlur(before_luma, _GRAIN_BLUR, 3)[keep]
+    b = cv2.GaussianBlur(after_luma, _GRAIN_BLUR, 3)[keep]
+    if a.std() < 1e-3 or b.std() < 1e-3:
+        return float("nan")
+    return float(np.corrcoef(a, b)[0, 1])
+
+
+def scan_fire_pixels(video_path: str | Path) -> FireScan | None:
+    """Orange and bright pixel fractions per frame, and shot continuity."""
     try:
         import cv2
     except ImportError:
@@ -62,48 +127,57 @@ def scan_fire_pixels(
     if not cap.isOpened():
         return None
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
+    # Frame i is judged on frame i - lag against frame i + 1, so a jump spread
+    # over a couple of frames is still compared across the whole change.
+    lag = max(1, int(round(0.1 * fps)))
     times: list[float] = []
     warm: list[float] = []
     hot: list[float] = []
+    continuity: list[float] = []
+    recent: deque[tuple[np.ndarray, np.ndarray]] = deque(maxlen=lag + 2)
     i = 0
     while True:
         ok, frame = cap.read()
         if not ok:
             break
-        small = cv2.resize(frame, (160, 90), interpolation=cv2.INTER_AREA)
+        small = cv2.resize(frame, _SCAN_SIZE, interpolation=cv2.INTER_AREA)
         b, g, r = cv2.split(small)
         luma = 0.114 * b + 0.587 * g + 0.299 * r
+        warm_mask = (r > 160) & (r > g + 15) & (r > b + 20)
         times.append(i / fps)
-        warm.append(
-            float(((r > 160) & (r > g + 15) & (r > b + 20)).mean())
-        )
+        warm.append(float(warm_mask.mean()))
         hot.append(float((luma > 200).mean()))
+        continuity.append(float("nan"))
+        recent.append((luma.astype(np.float32), warm_mask))
+        if i >= 1:
+            before = recent[0]
+            continuity[i - 1] = background_continuity(before[0], before[1], *recent[-1])
         i += 1
     cap.release()
     if not times:
         return None
-    return (
+    return FireScan(
         np.asarray(times, dtype=np.float64),
         np.asarray(warm, dtype=np.float64),
         np.asarray(hot, dtype=np.float64),
+        np.asarray(continuity, dtype=np.float64),
     )
 
 
-def flashes_from_scan(
-    scan: tuple[np.ndarray, np.ndarray, np.ndarray] | None,
-    taxonomy: Taxonomy,
-) -> list[float]:
+def flashes_from_scan(scan: FireScan | None, taxonomy: Taxonomy) -> list[float]:
     if scan is None:
         return []
-    times, warm, hot = scan
     return flashes_from_frame_metrics(
-        times,
-        warm,
-        hot,
+        scan.times,
+        scan.warm,
+        scan.hot,
         min_d_warm=taxonomy.visual_flash_min_d_warm,
         min_warm=taxonomy.visual_flash_min_warm,
         min_d_hot=taxonomy.visual_flash_min_d_hot,
         min_sep_sec=taxonomy.visual_flash_min_sep_sec,
+        continuity=scan.continuity,
+        min_continuity=taxonomy.visual_flash_min_continuity,
+        settle_sec=taxonomy.visual_flash_settle_sec,
     )
 
 
