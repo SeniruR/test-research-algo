@@ -49,20 +49,18 @@ def flashes_from_frame_metrics(
     return kept
 
 
-def detect_visual_flashes(
+def scan_fire_pixels(
     video_path: str | Path,
-    taxonomy: Taxonomy | None = None,
-) -> list[float]:
-    """Scan ``video_path`` for orange-pixel onsets."""
-    taxonomy = taxonomy or load_taxonomy()
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Per-frame times, orange-pixel fraction and bright-pixel fraction."""
     try:
         import cv2
     except ImportError:
-        return []
+        return None
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        return []
+        return None
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
     times: list[float] = []
     warm: list[float] = []
@@ -83,16 +81,119 @@ def detect_visual_flashes(
         i += 1
     cap.release()
     if not times:
-        return []
-    return flashes_from_frame_metrics(
+        return None
+    return (
         np.asarray(times, dtype=np.float64),
         np.asarray(warm, dtype=np.float64),
         np.asarray(hot, dtype=np.float64),
+    )
+
+
+def flashes_from_scan(
+    scan: tuple[np.ndarray, np.ndarray, np.ndarray] | None,
+    taxonomy: Taxonomy,
+) -> list[float]:
+    if scan is None:
+        return []
+    times, warm, hot = scan
+    return flashes_from_frame_metrics(
+        times,
+        warm,
+        hot,
         min_d_warm=taxonomy.visual_flash_min_d_warm,
         min_warm=taxonomy.visual_flash_min_warm,
         min_d_hot=taxonomy.visual_flash_min_d_hot,
         min_sep_sec=taxonomy.visual_flash_min_sep_sec,
     )
+
+
+def detect_visual_flashes(
+    video_path: str | Path,
+    taxonomy: Taxonomy | None = None,
+) -> list[float]:
+    """Scan ``video_path`` for orange-pixel onsets."""
+    taxonomy = taxonomy or load_taxonomy()
+    return flashes_from_scan(scan_fire_pixels(video_path), taxonomy)
+
+
+def fireball_spans(
+    times: np.ndarray,
+    warm: np.ndarray,
+    flashes: list[float],
+    *,
+    min_warm: float,
+    max_sec: float,
+    gap_sec: float,
+) -> list[tuple[float, float]]:
+    """How long each flash's fire stays on screen without leaving the frame.
+
+    A span runs from the flash while the orange fraction stays at ``min_warm``,
+    tolerating dips up to ``gap_sec``, and is capped at ``max_sec``.
+    """
+    spans: list[tuple[float, float]] = []
+    if times.size == 0:
+        return spans
+    for flash_t in flashes:
+        i = int(np.searchsorted(times, flash_t - 1e-6))
+        end_t = flash_t
+        last_warm_t = flash_t
+        while i < times.size and times[i] <= flash_t + max_sec:
+            if warm[i] >= min_warm:
+                last_warm_t = float(times[i])
+                end_t = last_warm_t
+            elif times[i] - last_warm_t > gap_sec:
+                break
+            i += 1
+        spans.append((float(flash_t), end_t))
+    return spans
+
+
+def drop_decay_inside_fireballs(
+    events: list[DetectedEvent],
+    spans: list[tuple[float, float]],
+    taxonomy: Taxonomy,
+) -> tuple[list[DetectedEvent], list[float]]:
+    """Drop weaker flash-less bangs that sit inside an on-screen fireball.
+
+    The fire that grows on screen after a blast is that blast; the soundtrack
+    keeps throwing up attacks while it decays, and on a clipped track they look
+    as sharp as real shots. Only explosion-like categories are dropped, only
+    without a flash of their own, and only when their attack is weaker than the
+    flash-backed blast that started the fire. Returns the kept events and the
+    dropped peak times.
+    """
+    if not spans:
+        return list(events), []
+    decay_cats = set(taxonomy.visual_fireball_decay_categories)
+    match = taxonomy.visual_flash_match_sec
+    min_dist = taxonomy.impulsive_min_peak_distance_sec
+
+    def strength(ev: DetectedEvent) -> float:
+        return ev.attack_prominence if ev.attack_prominence is not None else 0.0
+
+    dropped: set[int] = set()
+    for span_start, span_end in spans:
+        parents = [
+            e for e in events
+            if e.category in _IMPULSIVE
+            and "visual_flash" in e.sources
+            and abs(e.peak_sec - span_start) <= match
+        ]
+        if not parents:
+            continue
+        parent = max(parents, key=strength)
+        for i, ev in enumerate(events):
+            if (
+                ev is parent
+                or ev.category not in decay_cats
+                or "visual_flash" in ev.sources
+                or not parent.peak_sec + min_dist <= ev.peak_sec <= span_end
+                or strength(ev) >= strength(parent)
+            ):
+                continue
+            dropped.add(i)
+    kept = [e for i, e in enumerate(events) if i not in dropped]
+    return kept, sorted({round(events[i].peak_sec, 3) for i in dropped})
 
 
 def align_impulsive_events_to_flashes(

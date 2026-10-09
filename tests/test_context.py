@@ -963,6 +963,49 @@ def test_visual_flash_snaps_keeps_and_promotes():
     assert all("visual_flash" in e.sources for e in flashed)
 
 
+def test_fireball_span_ends_when_the_fire_leaves_the_frame():
+    from haptic_gt.components.detectors.fusion_detector.visual_flash import fireball_spans
+
+    fps = 25.0
+    times = np.arange(int(10 * fps), dtype=np.float64) / fps
+    warm = np.zeros_like(times)
+    warm[(times >= 1.0) & (times < 1.5)] = 0.10   # montage blast, cut away
+    warm[(times >= 3.0) & (times < 9.5)] = 0.08   # fireball that keeps burning
+    warm[(times >= 5.0) & (times < 5.08)] = 0.0   # two-frame flicker
+    spans = fireball_spans(times, warm, [1.0, 3.0], min_warm=0.025, max_sec=4.0, gap_sec=0.12)
+    assert abs(spans[0][1] - 1.46) < 0.05, spans
+    assert abs(spans[1][1] - 7.0) < 0.05, spans
+
+
+def test_decay_inside_an_on_screen_fireball_is_dropped():
+    """War tank: one fireball from 14.8 s to the end, decay bumps read as blasts."""
+    from haptic_gt.components.detectors.fusion_detector.visual_flash import drop_decay_inside_fireballs
+
+    def bang(cat, peak, promin, flash=False):
+        sources = ["audio", "sed"] + (["visual_flash"] if flash else [])
+        return DetectedEvent(cat, cat, peak - 0.08, peak, peak + 0.85, 0.7,
+                             sources=sources, attack_prominence=promin)
+
+    tax = load_taxonomy()
+    events = [
+        DetectedEvent("vehicle", "Vehicle", 0.0, 2.0, 18.0, 0.6),
+        bang("explosion", 13.40, 5.3),                # before the fire: kept
+        bang("explosion", 14.99, 9.1, flash=True),    # the blast
+        bang("explosion", 16.39, 3.1),                # decay: dropped
+        bang("smash", 18.09, 5.8),                    # decay: dropped
+        bang("gunshot", 17.00, 2.0),                  # gunshots never dropped
+        bang("explosion", 17.50, 9.5),                # louder than the blast: kept
+        bang("explosion", 17.90, 4.0, flash=True),    # its own flash: kept
+        bang("explosion", 18.90, 3.0),                # after the fire: kept
+    ]
+    kept, dropped = drop_decay_inside_fireballs(events, [(14.8, 18.63)], tax)
+    assert dropped == [16.39, 18.09], dropped
+    assert sorted(e.peak_sec for e in kept if e.category != "vehicle") == [
+        13.40, 14.99, 17.00, 17.50, 17.90, 18.90,
+    ]
+    assert any(e.category == "vehicle" for e in kept)
+
+
 def test_rumble_bed_survives_a_shot_fired_inside_it():
     """Vibration must not cut out the moment the cannon fires.
 

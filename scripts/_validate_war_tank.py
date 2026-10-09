@@ -35,8 +35,10 @@ SEED_SHOTS = [
     (14.931, 15.011, 15.861),
     (15.981, 16.061, 16.911),
 ]
-# The second fireball, visible in the frame at 17.5 s, that the run never fired.
-EXPECTED_EXTRA = [18.08]
+# No blast is expected after 14.99: the frames show one fireball growing from
+# 14.8 s to the end. The fusion step drops its decay bumps (16.4, 18.1) using
+# the picture, which this audio-only replay does not see.
+EXPECTED_EXTRA: list[float] = []
 # One accent per blast: these are decay bumps, not separate bangs.
 MUST_COLLAPSE = [11.911]
 # Track clanks during the drive: these must stay out of the haptic.

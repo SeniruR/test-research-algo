@@ -7,7 +7,9 @@ Rules:
 - A short Qwen gunshot/explosion scene may promote a sharp attack the audio
   branch turned down only for lack of backing. A scene never adds an event by
   itself.
-- No audio event is dropped for lacking a flash or a scene.
+- No audio event is dropped for lacking a flash or a scene. The one exception:
+  inside a fireball that stays on screen after a flash-backed blast, a weaker
+  flash-less explosion/smash is that blast's decay and is dropped.
 """
 
 from __future__ import annotations
@@ -17,13 +19,14 @@ from pathlib import Path
 from .branches import AudioBranchResult, VideoBranchResult
 from .frozen_fusion import DetectedEvent, dedupe_events_by_peak
 from .impulsive_nms import (
+    measure_impulsive_attacks,
     snap_impulsive_peaks_to_attacks,
     suppress_impulsive_overlaps,
 )
 from .impulsive_promote import drop_chips_under_blasts
 from .onset_refine import refine_event_timing
 from .taxonomy import Taxonomy
-from .visual_flash import align_impulsive_events_to_flashes
+from .visual_flash import align_impulsive_events_to_flashes, drop_decay_inside_fireballs
 from .visual_scenes import BANG_SCENE_CATEGORIES, VisualSpan
 
 # A candidate this close to an audio bang is that bang, not a new one.
@@ -153,6 +156,13 @@ def fuse_branches(
         events = suppress_impulsive_overlaps(events, source_wav, taxonomy)
         events = dedupe_events_by_peak(events)
 
+    fireball_dropped: list[float] = []
+    if video.fireballs:
+        events = measure_impulsive_attacks(events, source_wav, taxonomy)
+        events, fireball_dropped = drop_decay_inside_fireballs(
+            events, video.fireballs, taxonomy
+        )
+
     events = annotate_scene_labels(events, video.scenes)
 
     report = {
@@ -161,6 +171,7 @@ def fuse_branches(
         "flashes_seen": len(video.flashes),
         "flashes_snapped": flashes_snapped,
         "flashes_added": flashes_added,
+        "fireball_decay_dropped": fireball_dropped,
         "qwen_ran": video.qwen_ran,
         "scene_spans": len(video.scenes),
         "scene_backing": backing_on,

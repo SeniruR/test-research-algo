@@ -27,7 +27,7 @@ from .sed_frames import compute_frame_posteriors, posteriors_to_encoder_scores
 from .sustained_merge import merge_sustained_events
 from .taxonomy import Taxonomy
 from .tokenization import _load_audio_16k
-from .visual_flash import detect_visual_flashes
+from .visual_flash import fireball_spans, flashes_from_scan, scan_fire_pixels
 from .visual_scenes import VisualSpan
 
 VISUAL_CONTEXT_NAME = "visual_context.json"
@@ -46,6 +46,8 @@ class AudioBranchResult:
 @dataclass
 class VideoBranchResult:
     flashes: list[float] = field(default_factory=list)
+    #: (flash, last frame the fire is still on screen) per flash.
+    fireballs: list[tuple[float, float]] = field(default_factory=list)
     scenes: list[VisualSpan] = field(default_factory=list)
     qwen_ran: bool = False
     scene_report: dict = field(default_factory=dict)
@@ -105,8 +107,20 @@ def run_video_branch(
 ) -> VideoBranchResult:
     """Orange-flash times (every frame) and Qwen scene labels (per scene)."""
     video_path = Path(video_path)
-    flashes = detect_visual_flashes(video_path, taxonomy) if taxonomy.visual_flash_enabled else []
-    result = VideoBranchResult(flashes=list(flashes))
+    result = VideoBranchResult()
+    if taxonomy.visual_flash_enabled:
+        scan = scan_fire_pixels(video_path)
+        result.flashes = flashes_from_scan(scan, taxonomy)
+        if scan is not None:
+            times, warm, _hot = scan
+            result.fireballs = fireball_spans(
+                times,
+                warm,
+                result.flashes,
+                min_warm=taxonomy.visual_flash_min_warm,
+                max_sec=taxonomy.visual_fireball_max_sec,
+                gap_sec=taxonomy.visual_fireball_gap_sec,
+            )
     if use_qwen:
         from .visual_scenes import classify_scenes
 
@@ -131,6 +145,7 @@ def write_visual_context(
         ),
         "qwen_ran": video.qwen_ran,
         "flashes_sec": [round(float(t), 3) for t in video.flashes],
+        "fireballs_sec": [[round(s, 3), round(e, 3)] for s, e in video.fireballs],
         "spans": [
             {
                 "category": s.category,
