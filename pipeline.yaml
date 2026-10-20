@@ -27,7 +27,7 @@ generators:
     params: { content: game }   # "game" (games/movies) or "music"
   - name: b_frequency_shifting
   - name: c_pitch_matching
-    params: { iso532_loudness: false }  # true: real ISO 532-1 loudness via MoSQITo (slower)
+    params: { iso532_loudness: true }   # real ISO 532-1 loudness via MoSQITo; false keeps the 50 Hz fallback
   - name: d_haptic_gen
   - name: e_rule_based
 

@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 from scipy.ndimage import maximum_filter1d
+from scipy.signal import hilbert
 
 from haptic_gt.core.audio_io import INPUT_SR, VIB_SR
 from haptic_gt.core.contracts import Event
@@ -135,6 +136,12 @@ class ContinuousProfile:
     #: Release applied where one accent would still be ringing under the next, so
     #: a volley reads as separate hits instead of one long buzz.
     accent_release_ms: float = 45.0
+    #: How long an impulsive accent lasts, measured from its aligned attack.
+    #: A gunshot label often runs through the echo. Following that whole span
+    #: makes a long wobble a phone motor cannot repeat, so the bang is this hold.
+    accent_hold_ms: float = 250.0
+    #: Fade at each end of the hold so the cut does not click.
+    accent_fade_ms: float = 10.0
     #: Peak amplitude the loudest sustained rumble span is normalized to.
     sustained_soft_gain: float = 0.48
     #: Quieter rumble spans are scaled by their own loudness relative to the
@@ -240,6 +247,37 @@ def _scale_by_energy(
     if peak * scale > ceiling:
         scale = ceiling / peak
     return segment * scale
+
+
+def _steady_burst(
+    segment: np.ndarray,
+    sample_rate: int,
+    *,
+    hold_ms: float,
+    fade_ms: float,
+) -> np.ndarray:
+    """One level for a fixed hold, keeping the tone's zero crossings.
+
+    Dividing by the amplitude envelope stops the strength jumping inside the
+    bang. A floor keeps a near-silent sample from blowing up.
+    """
+    if segment.size == 0:
+        return segment
+    n = max(1, int(round(sample_rate * hold_ms / 1000.0)))
+    seg = np.asarray(segment[:n], dtype=np.float64)
+    envelope = np.abs(hilbert(seg))
+    peak_env = float(np.max(envelope)) if envelope.size else 0.0
+    if peak_env < 1e-8:
+        return np.zeros(seg.size, dtype=np.float32)
+    envelope = np.maximum(envelope, peak_env * 0.05)
+    flat = (seg / envelope).astype(np.float32)
+    fade = int(round(sample_rate * fade_ms / 1000.0))
+    fade = min(fade, flat.size // 2)
+    if fade > 1:
+        ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+        flat[:fade] *= ramp
+        flat[-fade:] *= ramp[::-1]
+    return flat
 
 
 def _release_tail(segment: np.ndarray, keep: int, release: int) -> np.ndarray:
@@ -520,7 +558,6 @@ def stitch_algorithm_output(
                 output_sr=output_sr,
                 process_kwargs=process_kwargs,
             )
-            segment = _normalize_segment(segment, target=profile.event_gain)
 
             onset_sec = _haptic_onset_sec(segment, output_sr)
             lead_sec = profile.accent_lead_ms / 1000.0
@@ -528,13 +565,13 @@ def stitch_algorithm_output(
             if start_idx < 0:
                 segment = segment[-start_idx:]
                 start_idx = 0
-            if not profile.enabled:
-                event_start_idx = max(0, int(round(ev.start_sec * output_sr)))
-                event_end_idx = min(total_samples, int(round(ev.end_sec * output_sr)))
-                if start_idx < event_start_idx:
-                    segment = segment[event_start_idx - start_idx :]
-                    start_idx = event_start_idx
-                segment = segment[: max(0, event_end_idx - start_idx)]
+            segment = _steady_burst(
+                segment,
+                output_sr,
+                hold_ms=profile.accent_hold_ms,
+                fade_ms=profile.accent_fade_ms,
+            )
+            segment = _normalize_segment(segment, target=profile.event_gain)
             if start_idx >= total_samples or segment.size == 0:
                 continue
             placements.append((start_idx, segment))

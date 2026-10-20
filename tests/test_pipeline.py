@@ -309,6 +309,49 @@ def test_event_only_impulse_output_is_clipped_to_detected_span():
         assert _rms(audio, sr, 1.5, 5.9) == 0.0
 
 
+def test_impulse_burst_does_not_follow_a_long_label():
+    """A gunshot label that includes the ring still vibrates only for the hold."""
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        source = td_path / "source.wav"
+        out = td_path / "long_gunshot.wav"
+        _write_test_wav(source, duration=6.0)
+        # Same shape as Gun_Shoot_001 shot 2: a short peak and a long labeled tail.
+        gunshot = [_event("gunshot", "Gunshot", 2.27, 2.35, 3.204, 0.9)]
+
+        def _decaying(in_wav, out_wav):
+            audio, sr = sf.read(in_wav, always_2d=False)
+            t = np.arange(len(audio), dtype=np.float64) / sr
+            tone = np.exp(-t * 8.0) * np.sin(2 * np.pi * 180.0 * t)
+            sf.write(out_wav, tone.astype(np.float32), sr, subtype="PCM_16")
+
+        profile = ContinuousProfile(enabled=False)
+        stitch_algorithm_output(
+            source,
+            gunshot,
+            out,
+            _decaying,
+            continuous=profile,
+        )
+
+        audio, sr = sf.read(out, always_2d=False)
+        hold = profile.accent_hold_ms / 1000.0
+        burst_start = 2.35 - profile.accent_lead_ms / 1000.0
+        burst_end = burst_start + hold
+        assert _rms(audio, sr, burst_start, burst_start + 0.20) > 0.0
+        assert _rms(audio, sr, burst_end + 0.05, 3.204) == 0.0
+
+        # The source tone decays about 7x over the hold. The burst keeps one level.
+        body_start = int((burst_start + 0.02) * sr)
+        body_end = int((burst_end - 0.02) * sr)
+        body = np.abs(audio[body_start:body_end])
+        mid = body.size // 2
+        early = float(np.sqrt(np.mean(np.square(body[:mid]))))
+        late = float(np.sqrt(np.mean(np.square(body[mid:]))))
+        assert early > 0.0
+        assert 0.7 < late / early < 1.4, (early, late)
+
+
 def test_vehicle_uses_bed_not_bang_accent():
     """Sparse vehicle detection keeps full bed (no bang accent at fake peak)."""
     with tempfile.TemporaryDirectory() as td:
