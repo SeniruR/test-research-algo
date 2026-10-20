@@ -10,6 +10,7 @@ from haptic_gt.core.audio_io import INPUT_SR, VIB_SR, extract_audio_from_video, 
 from haptic_gt.core.config import PipelineConfig, load_pipeline_config
 from haptic_gt.core.contracts import DetectionResult, Event, GeneratorContext
 from haptic_gt.core.gating import apply_gate
+from haptic_gt.core.music_separation import MIX_NAME, MUSIC_NAME, separate_music
 from haptic_gt.core.packaging import (
     EVENTS_JSON_NAME,
     GATED_AUDIO_NAME,
@@ -31,6 +32,9 @@ class RunResult:
     detection: DetectionResult | None = None
     events_json: Path | None = None
     gated_wav: Path | None = None
+    #: Untouched soundtrack and the isolated music stem, when separation ran.
+    original_mix: Path | None = None
+    music_wav: Path | None = None
     #: Whatever each generator returned, keyed by component name.
     generator_reports: dict[str, Any] = field(default_factory=dict)
 
@@ -60,6 +64,10 @@ class RunResult:
             out["events_json"] = self.events_json
         if self.gated_wav is not None and self.gated_wav.exists():
             out["gated_audio"] = self.gated_wav
+        if self.original_mix is not None and self.original_mix.exists():
+            out["original_mix"] = self.original_mix
+        if self.music_wav is not None and self.music_wav.exists():
+            out["music"] = self.music_wav
         return out
 
 
@@ -100,6 +108,11 @@ def run_pipeline(
     video_path = input_path if from_video else None
 
     result = RunResult(output_dir=output_dir, source_wav=source_wav)
+    if config.music_separation.enabled:
+        audio_debug = output_dir / "debug" / "audio_preparation"
+        separate_music(source_wav, audio_debug, config.music_separation)
+        result.original_mix = audio_debug / MIX_NAME
+        result.music_wav = audio_debug / MUSIC_NAME
     haptic_outputs: dict[str, str] = {}
 
     if detector is not None:

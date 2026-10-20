@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from haptic_gt.core.music_separation import MusicSeparationConfig
 from haptic_gt.core.synthesis import (
     SUSTAINED_MASK_MIN_COVERAGE,
     SUSTAINED_MASK_MIN_EVENTS,
@@ -39,6 +40,7 @@ class PipelineConfig:
     detector: ComponentSpec | None
     generators: list[ComponentSpec]
     synthesis: SynthesisConfig = field(default_factory=SynthesisConfig)
+    music_separation: MusicSeparationConfig = field(default_factory=MusicSeparationConfig)
 
 
 def _merge(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
@@ -60,6 +62,16 @@ def _component_spec(raw: Any, where: str) -> ComponentSpec:
     raise ValueError(f"{where}: expected a component name or {{name, params}}, got {raw!r}")
 
 
+def _music_separation(raw: dict[str, Any]) -> MusicSeparationConfig:
+    known = {f.name for f in fields(MusicSeparationConfig)}
+    unknown = sorted(set(raw) - known)
+    if unknown:
+        raise ValueError(
+            f"music_separation: unknown setting(s) {unknown}; expected some of {sorted(known)}"
+        )
+    return MusicSeparationConfig(**{"enabled": False, **raw})
+
+
 def _continuous_profile(raw: dict[str, Any]) -> ContinuousProfile:
     known = {f.name for f in fields(ContinuousProfile)}
     unknown = sorted(set(raw) - known)
@@ -79,6 +91,9 @@ def parse_pipeline_config(raw: dict[str, Any]) -> PipelineConfig:
         for i, item in enumerate(raw.get("generators") or [])
     ]
 
+    music_raw = dict(raw.get("music_separation") or {})
+    music_separation = _music_separation(music_raw)
+
     synth_raw = dict(raw.get("synthesis") or {})
     synthesis = SynthesisConfig(
         continuous=_continuous_profile(dict(synth_raw.pop("continuous", None) or {})),
@@ -91,7 +106,12 @@ def parse_pipeline_config(raw: dict[str, Any]) -> PipelineConfig:
     )
     if synth_raw:
         raise ValueError(f"synthesis: unknown setting(s) {sorted(synth_raw)}")
-    return PipelineConfig(detector=detector, generators=generators, synthesis=synthesis)
+    return PipelineConfig(
+        detector=detector,
+        generators=generators,
+        synthesis=synthesis,
+        music_separation=music_separation,
+    )
 
 
 def load_pipeline_config(

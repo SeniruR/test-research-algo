@@ -16,7 +16,7 @@ import soundfile as sf
 
 from haptic_gt.components.detectors.fusion_detector.frozen_fusion import DetectedEvent
 from haptic_gt.core import runner
-from haptic_gt.core.config import SynthesisConfig, load_pipeline_config
+from haptic_gt.core.config import SynthesisConfig, load_pipeline_config, parse_pipeline_config
 from haptic_gt.core.contracts import Event
 from haptic_gt.core.packaging import write_candidate_archive
 from haptic_gt.core.synthesis import ContinuousProfile, stitch_algorithm_output
@@ -1132,3 +1132,39 @@ def test_manual_events_detector_writes_events_json():
         assert payload["events"][0]["sources"] == ["manual"]
         assert payload["events"][0]["included_in_gate"] is True
         assert mock_stitch.call_count == 4
+
+
+def test_music_separation_replaces_source_and_keeps_the_mix():
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        source_in = td_path / "clip.wav"
+        _write_test_wav(source_in, duration=0.2)
+        original, sr = sf.read(source_in)
+
+        def fake_separate(path, settings):
+            mix, rate = sf.read(path)
+            assert settings.description == "music"
+            return np.ones_like(mix), np.zeros_like(mix), rate
+
+        config = parse_pipeline_config({
+            "detector": None,
+            "generators": [],
+            "music_separation": {"enabled": True, "description": "music"},
+        })
+        with patch("haptic_gt.core.music_separation.separate_with_sam_audio", fake_separate):
+            result = runner.run_pipeline(config, source_in, td_path / "out", from_video=False)
+
+        effects, effects_sr = sf.read(result.source_wav)
+        mix, _ = sf.read(result.original_mix)
+        music, _ = sf.read(result.music_wav)
+        assert effects_sr == sr
+        assert np.allclose(effects, 0.0, atol=1e-4)
+        assert np.allclose(mix, original, atol=1e-4)
+        assert np.allclose(music, 1.0, atol=1e-3)
+        assert result.save_all()["original_mix"] == result.original_mix
+        assert result.save_all()["music"] == result.music_wav
+
+
+def test_music_separation_rejects_unknown_settings():
+    with pytest.raises(ValueError, match="music_separation"):
+        parse_pipeline_config({"music_separation": {"bogus": True}})

@@ -31,6 +31,17 @@ generators:
   - name: d_haptic_gen
   - name: e_rule_based
 
+# Pull a music bed out before detection and generation. The phone still plays
+# the original video. source_audio.wav becomes everything except the music;
+# the mix and the music stem are kept under debug/audio_preparation/.
+# Needs SAM-Audio (see the Colab notebook) and a Hugging Face login.
+music_separation:
+  enabled: false
+  model: facebook/sam-audio-small   # facebook/sam-audio-large if the GPU can hold it
+  description: music
+  predict_spans: false              # leave false for a bed that runs under the scene
+  reranking_candidates: 1           # 8 is better and uses more memory
+
 # How event-driven generator output is laid onto the timeline.
 synthesis:
   continuous:

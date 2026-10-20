@@ -20,6 +20,8 @@ EVENTS_JSON_NAME = "events.json"
 #: goes under debug/pipeline/.
 DEBUG_OUTPUT_DIRECTORIES = {
     "source_audio": "debug/audio_preparation",
+    "original_mix": "debug/audio_preparation",
+    "music": "debug/audio_preparation",
     "gated_audio": "debug/context_detector",
     "events_json": "debug/context_detector",
 }
