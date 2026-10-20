@@ -149,6 +149,7 @@ def run_pipeline(
                 continuous=synth.continuous,
                 sustained_mask_min_events=synth.sustained_mask_min_events,
                 sustained_mask_min_coverage=synth.sustained_mask_min_coverage,
+                steady_accents=gen.slot in {"c", "d"},
             )
             report = next((r for r in reversed(reports) if r), None)
         else:

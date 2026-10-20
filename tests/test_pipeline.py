@@ -332,6 +332,15 @@ def test_impulse_burst_does_not_follow_a_long_label():
             out,
             _decaying,
             continuous=profile,
+            steady_accents=True,
+        )
+        plain = td_path / "plain_gunshot.wav"
+        stitch_algorithm_output(
+            source,
+            gunshot,
+            plain,
+            _decaying,
+            continuous=profile,
         )
 
         audio, sr = sf.read(out, always_2d=False)
@@ -350,6 +359,9 @@ def test_impulse_burst_does_not_follow_a_long_label():
         late = float(np.sqrt(np.mean(np.square(body[mid:]))))
         assert early > 0.0
         assert 0.7 < late / early < 1.4, (early, late)
+
+        plain_audio, plain_sr = sf.read(plain, always_2d=False)
+        assert _rms(plain_audio, plain_sr, 2.70, 3.10) > 0.0
 
 
 def test_vehicle_uses_bed_not_bang_accent():

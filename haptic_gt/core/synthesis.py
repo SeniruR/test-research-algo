@@ -136,9 +136,9 @@ class ContinuousProfile:
     #: Release applied where one accent would still be ringing under the next, so
     #: a volley reads as separate hits instead of one long buzz.
     accent_release_ms: float = 45.0
-    #: How long an impulsive accent lasts, measured from its aligned attack.
-    #: A gunshot label often runs through the echo. Following that whole span
-    #: makes a long wobble a phone motor cannot repeat, so the bang is this hold.
+    #: How long a C or D gunshot lasts, measured from its aligned attack.
+    #: Those two follow the whole label, ring included, and a phone cannot
+    #: repeat that wobble. A and B keep the detected span.
     accent_hold_ms: float = 250.0
     #: Fade at each end of the hold so the cut does not click.
     accent_fade_ms: float = 10.0
@@ -492,6 +492,7 @@ def stitch_algorithm_output(
     continuous: ContinuousProfile | None = None,
     sustained_mask_min_events: int = SUSTAINED_MASK_MIN_EVENTS,
     sustained_mask_min_coverage: float = SUSTAINED_MASK_MIN_COVERAGE,
+    steady_accents: bool = False,
 ) -> None:
     """
     Run an algorithm over the whole clip and mix per-event accents on top.
@@ -559,19 +560,35 @@ def stitch_algorithm_output(
                 process_kwargs=process_kwargs,
             )
 
-            onset_sec = _haptic_onset_sec(segment, output_sr)
-            lead_sec = profile.accent_lead_ms / 1000.0
-            start_idx = int(round((ev.peak_sec - onset_sec - lead_sec) * output_sr))
-            if start_idx < 0:
-                segment = segment[-start_idx:]
-                start_idx = 0
-            segment = _steady_burst(
-                segment,
-                output_sr,
-                hold_ms=profile.accent_hold_ms,
-                fade_ms=profile.accent_fade_ms,
-            )
-            segment = _normalize_segment(segment, target=profile.event_gain)
+            if steady_accents:
+                onset_sec = _haptic_onset_sec(segment, output_sr)
+                lead_sec = profile.accent_lead_ms / 1000.0
+                start_idx = int(round((ev.peak_sec - onset_sec - lead_sec) * output_sr))
+                if start_idx < 0:
+                    segment = segment[-start_idx:]
+                    start_idx = 0
+                segment = _steady_burst(
+                    segment,
+                    output_sr,
+                    hold_ms=profile.accent_hold_ms,
+                    fade_ms=profile.accent_fade_ms,
+                )
+                segment = _normalize_segment(segment, target=profile.event_gain)
+            else:
+                segment = _normalize_segment(segment, target=profile.event_gain)
+                onset_sec = _haptic_onset_sec(segment, output_sr)
+                lead_sec = profile.accent_lead_ms / 1000.0
+                start_idx = int(round((ev.peak_sec - onset_sec - lead_sec) * output_sr))
+                if start_idx < 0:
+                    segment = segment[-start_idx:]
+                    start_idx = 0
+                if not profile.enabled:
+                    event_start_idx = max(0, int(round(ev.start_sec * output_sr)))
+                    event_end_idx = min(total_samples, int(round(ev.end_sec * output_sr)))
+                    if start_idx < event_start_idx:
+                        segment = segment[event_start_idx - start_idx :]
+                        start_idx = event_start_idx
+                    segment = segment[: max(0, event_end_idx - start_idx)]
             if start_idx >= total_samples or segment.size == 0:
                 continue
             placements.append((start_idx, segment))
