@@ -17,19 +17,19 @@ import soundfile as sf
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 
-from haptic_gt.algorithms import freq_shift, haptic_gen, percept, pitch_match  # noqa: E402
-from haptic_gt.context.frozen_fusion import DetectedEvent  # noqa: E402
-from haptic_gt.context.rumble_filter import filter_sustained_rumble_bursts  # noqa: E402
-from haptic_gt.context.taxonomy import load_taxonomy  # noqa: E402
-from haptic_gt.haptic_synthesis import stitch_algorithm_output  # noqa: E402
+from haptic_gt.components.detectors.fusion_detector.component import to_event  # noqa: E402
+from haptic_gt.components.detectors.fusion_detector.frozen_fusion import DetectedEvent  # noqa: E402
+from haptic_gt.components.detectors.fusion_detector.rumble_filter import (  # noqa: E402
+    filter_sustained_rumble_bursts,
+)
+from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy  # noqa: E402
+from haptic_gt.core.audio_io import INPUT_SR, VIB_SR  # noqa: E402
+from haptic_gt.core.contracts import GeneratorContext  # noqa: E402
+from haptic_gt.core.registry import load_generators  # noqa: E402
+from haptic_gt.core.synthesis import stitch_algorithm_output  # noqa: E402
 from test_pipeline import _combined_scenes_audio  # noqa: E402
 
-ALGORITHMS = {
-    "A perception": percept.process_file,
-    "B freq shift": freq_shift.process_file,
-    "C pitch match": pitch_match.process_file,
-    "D haptic gen": haptic_gen.process_file,
-}
+GENERATORS = ["a_perception_mapping", "b_frequency_shifting", "c_pitch_matching", "d_haptic_gen"]
 
 
 def _rms(audio: np.ndarray, sr: int, a: float, b: float) -> float:
@@ -75,17 +75,24 @@ def main() -> None:
         print(f"drive coverage {covered / (drive[1] - drive[0]):.0%}")
 
         print("\nrendered levels (RMS)")
-        header = f"{'algorithm':14} {'drive':>8} {'car burst':>10} {'car gap':>8} {'shot':>8}"
+        header = f"{'generator':20} {'drive':>8} {'car burst':>10} {'car gap':>8} {'shot':>8}"
         print(header)
-        for name, fn in ALGORITHMS.items():
-            out = td_path / f"{name[0]}.wav"
-            stitch_algorithm_output(wav, events, out, fn)
+        gate = [to_event(ev, tax, ["explosion", "vehicle"]) for ev in events]
+        ctx = GeneratorContext(wav, None, td_path, INPUT_SR, VIB_SR)
+        for gen in load_generators(GENERATORS):
+            name = gen.component_name
+            out = td_path / gen.output_name
+
+            def _process(clip_in, clip_out, _gen=gen):
+                _gen.generate(Path(clip_in), Path(clip_out), ctx)
+
+            stitch_algorithm_output(wav, gate, out, _process)
             haptic, out_sr = sf.read(out)
             drv = _rms(haptic, out_sr, 12.0, 16.0)
             burst = _rms(haptic, out_sr, bursts[0][0] + 0.3, bursts[0][1] - 0.3)
             gap = _rms(haptic, out_sr, bursts[0][1] + 0.2, bursts[1][0] - 0.2)
             shot = _rms(haptic, out_sr, shots[0] - 0.02, shots[0] + 0.20)
-            print(f"{name:14} {drv:8.4f} {burst:10.4f} {gap:8.4f} {shot:8.4f}")
+            print(f"{name:20} {drv:8.4f} {burst:10.4f} {gap:8.4f} {shot:8.4f}")
 
 
 if __name__ == "__main__":

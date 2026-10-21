@@ -13,14 +13,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from haptic_gt.context.frozen_fusion import DetectedEvent, dedupe_events_by_peak
-from haptic_gt.context.impulsive_nms import (
+from haptic_gt.components.detectors.fusion_detector.frozen_fusion import DetectedEvent, dedupe_events_by_peak
+from haptic_gt.components.detectors.fusion_detector.impulsive_nms import (
     measure_impulsive_attacks,
     suppress_impulsive_overlaps,
 )
-from haptic_gt.context.impulsive_promote import promote_impulsive_transients
-from haptic_gt.context.onset_refine import refine_event_timing
-from haptic_gt.context.taxonomy import load_taxonomy
+from haptic_gt.components.detectors.fusion_detector.impulsive_promote import promote_impulsive_transients
+from haptic_gt.components.detectors.fusion_detector.onset_refine import refine_event_timing
+from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy
 
 SRC = ROOT / "sample" / "_validate_war_tank" / "source_audio.wav"
 
@@ -35,8 +35,10 @@ SEED_SHOTS = [
     (14.931, 15.011, 15.861),
     (15.981, 16.061, 16.911),
 ]
-# The second fireball, visible in the frame at 17.5 s, that the run never fired.
-EXPECTED_EXTRA = [18.08]
+# No blast is expected after 14.99: the frames show one fireball growing from
+# 14.8 s to the end. The fusion step drops its decay bumps (16.4, 18.1) using
+# the picture, which this audio-only replay does not see.
+EXPECTED_EXTRA: list[float] = []
 # One accent per blast: these are decay bumps, not separate bangs.
 MUST_COLLAPSE = [11.911]
 # Track clanks during the drive: these must stay out of the haptic.

@@ -1,0 +1,14 @@
+# Categories accepted in hand-labelled events.
+#   impulsive: accent at peak_sec (bang); otherwise the haptic follows the span
+#   in_gate:   drives the haptics unless the gate_categories param overrides it
+defaults:
+  # Window used when an event omits start_sec / end_sec
+  pre_roll_sec: 0.08
+  half_width_sec: 0.45
+
+categories:
+  gunshot:   { impulsive: true,  in_gate: true }
+  explosion: { impulsive: true,  in_gate: true }
+  smash:     { impulsive: true,  in_gate: true }
+  car_crash: { impulsive: true,  in_gate: true }
+  vehicle:   { impulsive: false, in_gate: true }

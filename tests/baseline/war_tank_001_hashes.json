@@ -1,0 +1,27 @@
+{
+  "inputs": {
+    "war_tank_001.mp4": "13788e6f3d5225ce82665c324cffd1bde4b344aafed5cd09b654c3842809d030",
+    "source_audio.wav": "c000cb33df0630286525c2edb5970fa03352385e32c19b9b364c7b3f6966986b",
+    "events.json": "84925be7db332a3742b3e2358487cba53788646cd25595eea0afe884e2f44dc9"
+  },
+  "scenarios": {
+    "default": {
+      "algorithm_a_perception_mapping.wav": "9ecb2ed3f3dccebe8e2cceffeb5398cecfbc8d142080e7c9d65b8064dc7e2de6",
+      "algorithm_b_frequency_shifting.wav": "2dd833f188b85bec3fe7d5d434ae0eca2d4453cbce44f25e2eb3acc788e6610a",
+      "algorithm_c_pitch_matching.wav": "147e408ebfc0501ce6a4e2e41b8457519717f2e8744d1c22dd26d90adab45b14",
+      "algorithm_d_haptic_gen.wav": "52e036056911c299c53ad91ab03b92ba317c796673787022322381f0506bbb99",
+      "algorithm_e_rule_based.wav": "2feb7db695d1eac139b5cca4f8bb8a472812709f8a8a61cdcb1001fd9b6394ed",
+      "events.json#events": "3e7deecfab31dd0a6deb9f252b1137a1169f4fbf2e0077502e11318d83a8979d",
+      "gated_audio.wav": "7c53a79f235b2b66a1ffea8ef0b8135f98167cc4a4fed4b9c25aadc755891b79"
+    },
+    "continuous": {
+      "algorithm_a_perception_mapping.wav": "187141d59282f7510fa401e1b12a5783bd961288277267aeb4845f12fc574589",
+      "algorithm_b_frequency_shifting.wav": "80b694384262b2e660e74e98641fc4043bfc9b0b68804c8566287dc13bb196d8",
+      "algorithm_c_pitch_matching.wav": "dd683d806dca40b3efdf93cf6ccd392bcbb5aa63d5b23c21eb6697c44f8e9458",
+      "algorithm_d_haptic_gen.wav": "1e4c7e10e62bb5adef5970e06cb2df65a0c7e0dde74e9ebc7795616775944a10",
+      "algorithm_e_rule_based.wav": "2feb7db695d1eac139b5cca4f8bb8a472812709f8a8a61cdcb1001fd9b6394ed",
+      "events.json#events": "3e7deecfab31dd0a6deb9f252b1137a1169f4fbf2e0077502e11318d83a8979d",
+      "gated_audio.wav": "7c53a79f235b2b66a1ffea8ef0b8135f98167cc4a4fed4b9c25aadc755891b79"
+    }
+  }
+}

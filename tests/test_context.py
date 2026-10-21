@@ -5,35 +5,40 @@ from __future__ import annotations
 import numpy as np
 import soundfile as sf
 
-from haptic_gt.context.event_aggregation import aggregate_events
-from haptic_gt.context.context_detectors import SymbolicToken
-from haptic_gt.context.encoders import EncoderScore
-from haptic_gt.context.frozen_fusion import fuse_events
-from haptic_gt.context.mask import (
+from haptic_gt.components.detectors.fusion_detector.event_aggregation import aggregate_events
+from haptic_gt.components.detectors.fusion_detector.context_detectors import SymbolicToken
+from haptic_gt.components.detectors.fusion_detector.encoders import EncoderScore
+from haptic_gt.components.detectors.fusion_detector.frozen_fusion import fuse_events
+from haptic_gt.components.detectors.fusion_detector.mask import (
     build_event_mask,
     events_for_haptic_gate,
     resolve_gate_categories,
 )
-from haptic_gt.context.onset_refine import refine_event_timing
-from haptic_gt.context.proposals import propose_onsets
-from haptic_gt.context.taxonomy import load_taxonomy, match_label_to_category
-from haptic_gt.context.frozen_fusion import DetectedEvent
+from haptic_gt.components.detectors.fusion_detector.onset_refine import refine_event_timing
+from haptic_gt.components.detectors.fusion_detector.proposals import propose_onsets
+from haptic_gt.components.detectors.fusion_detector.taxonomy import load_taxonomy, match_label_to_category
+from haptic_gt.components.detectors.fusion_detector.frozen_fusion import DetectedEvent
 
 
 def test_taxonomy_mapping():
     tax = load_taxonomy()
-    assert match_label_to_category(tax, "Thunder", "audio") == "weather"
     assert match_label_to_category(tax, "Gunshot, gunfire", "audio") == "gunshot"
     assert match_label_to_category(tax, "Artillery fire", "audio") == "explosion"
-    assert match_label_to_category(tax, "chopping wood", "video") == "human_activity"
+    assert match_label_to_category(tax, "Smash, crash", "audio") == "smash"
+    assert match_label_to_category(tax, "Shatter", "audio") == "smash"
+    assert match_label_to_category(tax, "Engine starting", "audio") == "vehicle"
+    assert match_label_to_category(tax, "Accelerating, revving, vroom", "audio") == "vehicle"
+    assert match_label_to_category(tax, "Thunder", "audio") is None
+    assert match_label_to_category(tax, "Car", "audio") is None
+    assert match_label_to_category(tax, "Crash cymbal", "audio") is None
 
 
 def test_event_mask():
     sr = 44100
     events = [
         DetectedEvent(
-            category="weather",
-            label="thunder",
+            category="smash",
+            label="Shatter",
             start_sec=1.0,
             peak_sec=1.5,
             end_sec=2.0,
@@ -46,12 +51,12 @@ def test_event_mask():
     assert mask[0] == 0.0
 
 
-def test_haptic_gate_excludes_human_activity():
+def test_haptic_gate_excludes_unknown_categories():
     tax = load_taxonomy()
     events = [
         DetectedEvent(
-            category="human_activity",
-            label="Chainsaw",
+            category="weather",
+            label="Thunder",
             start_sec=0.0,
             peak_sec=5.0,
             end_sec=11.0,
@@ -96,7 +101,7 @@ def test_gate_categories_override():
     assert {e.category for e in default_gate} == {"vehicle", "gunshot"}
 
     custom_gate = events_for_haptic_gate(
-        events, tax, gate_categories=["vehicle", "human_activity"]
+        events, tax, gate_categories=["vehicle", "smash"]
     )
     assert len(custom_gate) == 1
     assert custom_gate[0].category == "vehicle"
@@ -124,7 +129,9 @@ def test_resolve_gate_categories_default():
     assert "gunshot" in cats
     assert "explosion" in cats
     assert "vehicle" in cats
-    assert "weather" in cats
+    assert "smash" in cats
+    assert "car_crash" in cats
+    assert "weather" not in cats
     assert "human_activity" not in cats
 
 
@@ -194,7 +201,7 @@ def test_propose_keeps_quiet_early_and_loud_late():
 
 
 def test_events_from_manual():
-    from haptic_gt.context.manual_events import events_from_manual
+    from haptic_gt.components.detectors.fusion_detector.manual_events import events_from_manual
 
     events = events_from_manual(
         {
@@ -244,7 +251,7 @@ def test_refine_snaps_late_hint_to_early_blast_on_short_clip():
 
 
 def test_dedupe_after_snap_collapses_duplicate_peaks():
-    from haptic_gt.context.frozen_fusion import dedupe_events_by_peak
+    from haptic_gt.components.detectors.fusion_detector.frozen_fusion import dedupe_events_by_peak
 
     events = [
         DetectedEvent("explosion", "Explosion", 0.17, 0.25, 1.10, 0.64),
@@ -255,23 +262,23 @@ def test_dedupe_after_snap_collapses_duplicate_peaks():
     assert abs(merged[0].confidence - 0.64) < 1e-6
 
 
-def test_fusion_weather():
+def test_fusion_smash():
     tax = load_taxonomy()
     tokens = [
         SymbolicToken(
             time_sec=2.0,
-            label="Thunder",
+            label="Smash, crash",
             confidence=0.9,
             modality="audio",
-            category="weather",
+            category="smash",
         )
     ]
     scores = [
-        EncoderScore(time_sec=2.0, label="Thunder", score=0.7, source="audio"),
+        EncoderScore(time_sec=2.0, label="Smash, crash", score=0.7, source="audio"),
     ]
     events = fuse_events(tokens, scores, tax)
     assert len(events) >= 1
-    assert events[0].category == "weather"
+    assert events[0].category == "smash"
 
 
 def test_fusion_gunshot_audio_only():
@@ -344,7 +351,8 @@ def test_haptic_onset_alignment():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.haptic_synthesis import stitch_algorithm_output
+    from haptic_gt.core.contracts import Event
+    from haptic_gt.core.synthesis import stitch_algorithm_output
 
     sr = 44100
     duration = 4.0
@@ -359,7 +367,7 @@ def test_haptic_onset_alignment():
         sf.write(source, audio.astype(np.float32), sr, subtype="PCM_16")
 
         events = [
-            DetectedEvent("explosion", "Explosion", 1.9, 2.0, 2.4, 0.9),
+            Event("explosion", "Explosion", 1.9, 2.0, 2.4, 0.9, impulsive=True, in_gate=True),
         ]
 
         def _fake_algo(inp, outp):
@@ -384,7 +392,7 @@ def test_propose_all_includes_sustained_scan():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.proposals import propose_all_windows
+    from haptic_gt.components.detectors.fusion_detector.proposals import propose_all_windows
 
     sr = 44100
     duration = 10.0
@@ -506,7 +514,7 @@ def test_promote_recovers_cannon_labeled_vehicle():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+    from haptic_gt.components.detectors.fusion_detector.impulsive_promote import promote_impulsive_transients
 
     tax = load_taxonomy()
     sr = 44100
@@ -536,7 +544,7 @@ def test_promote_recovers_quieter_volley_shots():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+    from haptic_gt.components.detectors.fusion_detector.impulsive_promote import promote_impulsive_transients
 
     tax = load_taxonomy()
     sr = 44100
@@ -577,7 +585,7 @@ def test_promote_ignores_track_clanks_in_drive():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+    from haptic_gt.components.detectors.fusion_detector.impulsive_promote import promote_impulsive_transients
 
     tax = load_taxonomy()
     sr = 44100
@@ -615,7 +623,7 @@ def test_demote_rumble_false_explosion():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+    from haptic_gt.components.detectors.fusion_detector.impulsive_promote import promote_impulsive_transients
 
     tax = load_taxonomy()
     sr = 44100
@@ -647,7 +655,7 @@ def test_demote_rumble_false_explosion():
 
 def test_clip_start_is_not_a_transient():
     """Silence-to-signal at t=0 must not look like an attack."""
-    from haptic_gt.context.onset_refine import _spectral_flux, local_flux_ratio
+    from haptic_gt.components.detectors.fusion_detector.onset_refine import _spectral_flux, local_flux_ratio
 
     sr = 44100
     duration = 3.0
@@ -663,7 +671,7 @@ def test_shot_calibration_marks_hit_miss_and_fp():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.shot_calib import (
+    from haptic_gt.components.detectors.fusion_detector.shot_calib import (
         calibrate_shot_times,
         format_shot_calibration_table,
         scan_shot_attacks,
@@ -714,7 +722,7 @@ def test_shot_calibration_marks_hit_miss_and_fp():
 
 
 def test_debug_events_table():
-    from haptic_gt.context.debug_events import EventDebugRow, format_events_table
+    from haptic_gt.components.detectors.fusion_detector.debug_events import EventDebugRow, format_events_table
 
     rows = [
         EventDebugRow(
@@ -758,7 +766,7 @@ def test_late_decay_report_snaps_to_the_muzzle():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_nms import snap_impulsive_peaks_to_attacks
+    from haptic_gt.components.detectors.fusion_detector.impulsive_nms import snap_impulsive_peaks_to_attacks
 
     tax = load_taxonomy()
     sr = 22050
@@ -798,7 +806,7 @@ def test_snap_prefers_earlier_muzzle_over_louder_boom():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_nms import snap_impulsive_peaks_to_attacks
+    from haptic_gt.components.detectors.fusion_detector.impulsive_nms import snap_impulsive_peaks_to_attacks
 
     tax = load_taxonomy()
     sr = 22050
@@ -828,7 +836,7 @@ def test_snap_does_not_steal_the_previous_volley_shot():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_nms import snap_impulsive_peaks_to_attacks
+    from haptic_gt.components.detectors.fusion_detector.impulsive_nms import snap_impulsive_peaks_to_attacks
 
     tax = load_taxonomy()
     with tempfile.TemporaryDirectory() as td:
@@ -854,7 +862,7 @@ def test_accents_closer_than_min_distance_collapse_to_the_stronger():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_nms import suppress_impulsive_overlaps
+    from haptic_gt.components.detectors.fusion_detector.impulsive_nms import suppress_impulsive_overlaps
 
     tax = load_taxonomy()
     with tempfile.TemporaryDirectory() as td:
@@ -880,7 +888,7 @@ def test_accent_spans_are_trimmed_so_they_do_not_overlap():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_nms import suppress_impulsive_overlaps
+    from haptic_gt.components.detectors.fusion_detector.impulsive_nms import suppress_impulsive_overlaps
 
     tax = load_taxonomy()
     with tempfile.TemporaryDirectory() as td:
@@ -902,7 +910,7 @@ def test_accent_spans_are_trimmed_so_they_do_not_overlap():
 
 
 def test_visual_flash_onsets_ignore_cuts_and_keep_orange_jumps():
-    from haptic_gt.context.visual_flash import flashes_from_frame_metrics
+    from haptic_gt.components.detectors.fusion_detector.visual_flash import flashes_from_frame_metrics
 
     fps = 30.0
     n = 90
@@ -929,8 +937,38 @@ def test_visual_flash_onsets_ignore_cuts_and_keep_orange_jumps():
     assert abs(flashes[1] - 2.2) < 0.04, flashes
 
 
+def test_orange_from_a_cut_is_not_a_flash():
+    """Gun_Shoot: cuts to sunset-lit shots read as 13 explosions."""
+    from haptic_gt.components.detectors.fusion_detector.visual_flash import flashes_from_frame_metrics
+
+    fps = 25.0
+    n = 250
+    times = np.arange(n, dtype=np.float64) / fps
+    warm = np.zeros(n)
+    hot = np.zeros(n)
+    continuity = np.ones(n)
+    # 2.0 s: cut to a sunset shot -> orange arrives with the cut.
+    continuity[49:51] = 0.3
+    warm[50:100] = 0.10
+    # 4.0 s: cut to a dark shot, muzzle flash 0.12 s in (war tank 11.57).
+    continuity[99:101] = -0.4
+    warm[103] = 0.13
+    # 6.0 s: cut into a fireball still filling in (war tank 12.2 -> 12.37).
+    continuity[149:152] = 0.6
+    warm[152:200] = np.linspace(0.06, 0.14, 48)
+    warm[155:200] += 0.04
+    # 9.0 s: fireball inside a steady shot (war tank 14.8).
+    warm[225:] = 0.06
+    flashes = flashes_from_frame_metrics(
+        times, warm, hot,
+        min_d_warm=0.025, min_warm=0.025, min_d_hot=-0.005, min_sep_sec=0.45,
+        continuity=continuity, min_continuity=0.85, settle_sec=0.25,
+    )
+    assert [round(f, 2) for f in flashes] == [4.12, 9.0], flashes
+
+
 def test_visual_flash_snaps_keeps_and_promotes():
-    from haptic_gt.context.visual_flash import align_impulsive_events_to_flashes
+    from haptic_gt.components.detectors.fusion_detector.visual_flash import align_impulsive_events_to_flashes
 
     tax = load_taxonomy()
     out = align_impulsive_events_to_flashes(
@@ -955,6 +993,49 @@ def test_visual_flash_snaps_keeps_and_promotes():
     assert all("visual_flash" in e.sources for e in flashed)
 
 
+def test_fireball_span_ends_when_the_fire_leaves_the_frame():
+    from haptic_gt.components.detectors.fusion_detector.visual_flash import fireball_spans
+
+    fps = 25.0
+    times = np.arange(int(10 * fps), dtype=np.float64) / fps
+    warm = np.zeros_like(times)
+    warm[(times >= 1.0) & (times < 1.5)] = 0.10   # montage blast, cut away
+    warm[(times >= 3.0) & (times < 9.5)] = 0.08   # fireball that keeps burning
+    warm[(times >= 5.0) & (times < 5.08)] = 0.0   # two-frame flicker
+    spans = fireball_spans(times, warm, [1.0, 3.0], min_warm=0.025, max_sec=4.0, gap_sec=0.12)
+    assert abs(spans[0][1] - 1.46) < 0.05, spans
+    assert abs(spans[1][1] - 7.0) < 0.05, spans
+
+
+def test_decay_inside_an_on_screen_fireball_is_dropped():
+    """War tank: one fireball from 14.8 s to the end, decay bumps read as blasts."""
+    from haptic_gt.components.detectors.fusion_detector.visual_flash import drop_decay_inside_fireballs
+
+    def bang(cat, peak, promin, flash=False):
+        sources = ["audio", "sed"] + (["visual_flash"] if flash else [])
+        return DetectedEvent(cat, cat, peak - 0.08, peak, peak + 0.85, 0.7,
+                             sources=sources, attack_prominence=promin)
+
+    tax = load_taxonomy()
+    events = [
+        DetectedEvent("vehicle", "Vehicle", 0.0, 2.0, 18.0, 0.6),
+        bang("explosion", 13.40, 5.3),                # before the fire: kept
+        bang("explosion", 14.99, 9.1, flash=True),    # the blast
+        bang("explosion", 16.39, 3.1),                # decay: dropped
+        bang("smash", 18.09, 5.8),                    # decay: dropped
+        bang("gunshot", 17.00, 2.0),                  # gunshots never dropped
+        bang("explosion", 17.50, 9.5),                # louder than the blast: kept
+        bang("explosion", 17.90, 4.0, flash=True),    # its own flash: kept
+        bang("explosion", 18.90, 3.0),                # after the fire: kept
+    ]
+    kept, dropped = drop_decay_inside_fireballs(events, [(14.8, 18.63)], tax)
+    assert dropped == [16.39, 18.09], dropped
+    assert sorted(e.peak_sec for e in kept if e.category != "vehicle") == [
+        13.40, 14.99, 17.00, 17.50, 17.90, 18.90,
+    ]
+    assert any(e.category == "vehicle" for e in kept)
+
+
 def test_rumble_bed_survives_a_shot_fired_inside_it():
     """Vibration must not cut out the moment the cannon fires.
 
@@ -965,7 +1046,7 @@ def test_rumble_bed_survives_a_shot_fired_inside_it():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.impulsive_promote import promote_impulsive_transients
+    from haptic_gt.components.detectors.fusion_detector.impulsive_promote import promote_impulsive_transients
 
     tax = load_taxonomy()
     scores = [
@@ -1012,8 +1093,8 @@ def test_events_json_reports_attack_strength():
     import tempfile
     from pathlib import Path
 
-    from haptic_gt.context.detector import EventResult
-    from haptic_gt.context.impulsive_nms import measure_impulsive_attacks
+    from haptic_gt.components.detectors.fusion_detector.detector import EventResult
+    from haptic_gt.components.detectors.fusion_detector.impulsive_nms import measure_impulsive_attacks
 
     tax = load_taxonomy()
     with tempfile.TemporaryDirectory() as td:
@@ -1041,7 +1122,7 @@ def test_events_json_reports_attack_strength():
 if __name__ == "__main__":
     test_taxonomy_mapping()
     test_event_mask()
-    test_haptic_gate_excludes_human_activity()
+    test_haptic_gate_excludes_unknown_categories()
     test_gate_categories_override()
     test_multi_event_mask()
     test_resolve_gate_categories_default()
@@ -1051,7 +1132,7 @@ if __name__ == "__main__":
     test_events_from_manual()
     test_refine_snaps_late_hint_to_early_blast_on_short_clip()
     test_dedupe_after_snap_collapses_duplicate_peaks()
-    test_fusion_weather()
+    test_fusion_smash()
     test_fusion_gunshot_audio_only()
     test_peak_split_multiple_blasts()
     test_refine_impulsive_peak_forward()
