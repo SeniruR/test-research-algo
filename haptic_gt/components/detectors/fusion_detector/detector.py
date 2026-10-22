@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .ast_verify import normalize_mode, verify_events_with_ast
 from .branches import (
     run_audio_branch,
     run_video_branch,
@@ -33,7 +34,7 @@ from .rumble_filter import filter_sustained_rumble_bursts
 from .sed_frames import release_models
 from .sustained_merge import merge_sustained_events
 from .taxonomy import load_taxonomy
-from .tokenization import tokenize_video_audio
+from .tokenization import _load_audio_16k, tokenize_video_audio
 from .visual_flash import align_impulsive_events_to_flashes
 from .visual_scenes import default_use_qwen
 
@@ -93,6 +94,8 @@ class EventResult:
                 row["attack_prominence"] = e.attack_prominence
             if e.visual_categories:
                 row["visual_categories"] = list(e.visual_categories)
+            if e.ast is not None:
+                row["ast"] = dict(e.ast)
             event_rows.append(row)
 
         haptic_out = {
@@ -126,6 +129,7 @@ def detect_events(
     gate_categories: list[str] | None = None,
     full_scan: bool = False,
     use_qwen: bool | None = None,
+    ast_verify: str | bool | None = None,
 ) -> EventResult:
     """
     Run context detection.
@@ -135,7 +139,9 @@ def detect_events(
     video only) run independently, then ``fuse_branches`` joins them →
     events.json → optional gated_audio.wav. ``use_qwen`` defaults to
     ``visual_scenes_enabled`` in the taxonomy, and only on a GPU with
-    ``visual_scenes_min_gpu_gb`` of memory (so not on a T4).
+    ``visual_scenes_min_gpu_gb`` of memory (so not on a T4). ``ast_verify``
+    (``annotate`` / ``relabel``) has AST check each fused event's category; see
+    ``ast_verify.py``.
 
     Legacy path (``full_scan`` or ``sed_enabled: false``): sparse onset proposals →
     window tagging → frozen fusion. Kept for comparison; its onsets are only as
@@ -158,6 +164,7 @@ def detect_events(
             output_dir=output_dir,
             write_gated=write_gated,
             use_qwen=use_qwen,
+            ast_verify=normalize_mode(ast_verify),
         )
 
     tokens_data = tokenize_video_audio(video_path, source_wav, timeline_hz=taxonomy.timeline_hz)
@@ -289,6 +296,7 @@ def _detect_via_branches(
     output_dir: str | Path | None,
     write_gated: bool,
     use_qwen: bool,
+    ast_verify: str = "off",
 ) -> EventResult:
     """
     Default path: audio branch, video branch, fusion.
@@ -307,6 +315,13 @@ def _detect_via_branches(
         write_visual_context(video, output_dir, video_name=video_path.name)
 
     events, fusion_report = fuse_branches(audio, video, source_wav, taxonomy)
+    ast_report: dict = {"mode": "off"}
+    if ast_verify != "off":
+        # Runs after Qwen, which has freed the GPU by now
+        events, ast_report = verify_events_with_ast(
+            events, _load_audio_16k(source_wav), taxonomy, ast_verify
+        )
+        release_models()
 
     return _finalize(
         events,
@@ -316,6 +331,6 @@ def _detect_via_branches(
         output_dir=output_dir,
         write_gated=write_gated,
         sustained_gate=audio.gate_report,
-        detector_info=audio.detector_info,
+        detector_info={**audio.detector_info, "ast_verify": ast_report},
         fusion=fusion_report,
     )

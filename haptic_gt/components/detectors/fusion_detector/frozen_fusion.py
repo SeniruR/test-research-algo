@@ -28,6 +28,8 @@ class DetectedEvent:
     attack_prominence: float | None = None
     #: Picture scene labels (Qwen) overlapping this event. Recorded, not timing.
     visual_categories: list[str] = field(default_factory=list)
+    #: AST's verdict on the category (``ast_verify``), or None when it did not run.
+    ast: dict | None = None
 
 
 def _best_encoder_scores(

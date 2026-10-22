@@ -181,6 +181,16 @@ Categories, gate defaults and every threshold live in
 | `smash` | impulsive | yes |
 | `car_crash` | impulsive | yes |
 | `vehicle` | sustained (rumble) | yes |
+| `impact` | impulsive (thud, whack, clang, knock, bang) | yes |
+| `thunder` | impulsive | yes |
+| `aircraft` | sustained | no |
+| `thunderstorm`, `hum` | sustained | no (detected only) |
+
+AudioSet labels map to categories by name: an exact match in any category wins,
+otherwise a substring match in category order. `thunderstorm` and `hum` exist to
+claim labels that would otherwise leak into `thunder` and `impact` by substring.
+Only `vehicle` gets the loudness cropping for sustained sounds, so other sustained
+categories stay out of the gate unless you add them via `gate_categories`.
 
 Audio branch: framewise sound-event detection with PANNs (`panns-inference`,
 ~10 ms frames) or dense AST (`MIT/ast-finetuned-audioset-10-10-0.4593`) as
@@ -191,7 +201,18 @@ muzzle/explosion flash scan, plus optional Qwen2.5-VL scene labels. With
 and runs on an L4 or A100; `true` or `false` forces it. The choice and the reason
 are printed and recorded under `detector` in `events.json`. Params: `gate_categories`, `use_qwen`, `full_scan`,
 `manual_rumble_peaks` (replace auto vehicle spans with hand-marked times),
-`taxonomy_path`.
+`ast_verify`, `taxonomy_path`.
+
+**AST category check (`ast_verify`).** PANNs times events precisely but labels
+them less accurately than AST (AudioSet mAP 0.385 vs 0.459). With `ast_verify:
+annotate`, AST scores one window per final event and each event gets an `ast`
+record in `events.json` (AST's best category and label, its score, AST's score
+for the event's own category, and a status: `agree`, `disagree`, `unconfirmed`,
+`not_scorable`). `relabel` also takes AST's category when it clearly wins
+(`ast_verify_margin`) and is the same kind, impulsive or sustained; `car_crash`,
+which AST cannot hear, is never changed. Timing is never changed. The counts are
+under `detector.ast_verify`; thresholds are the `ast_verify_*` keys in
+`taxonomy.yaml`.
 
 ## manual_events detector
 

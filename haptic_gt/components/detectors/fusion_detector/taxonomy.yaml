@@ -110,6 +110,20 @@ sed_merge_gap_sec: 0.20
 # Splitting a volley: a shot peak must reach this fraction of the span's strongest
 sed_peak_rel: 0.60
 
+# --- AST second opinion (detector param ast_verify) -------------------------
+# PANNs places events precisely but labels them less accurately than AST
+# (AudioSet mAP 0.385 vs 0.459). With ast_verify on, AST scores one window per
+# final event; timing is never changed. Impulsive events get a window centred on
+# the peak; sustained ones their span, capped around the peak.
+ast_verify_window_sec: 1.0
+ast_verify_sustained_max_sec: 3.0
+# AST's best category must reach this score to count as an opinion at all...
+ast_verify_min_score: 0.30
+# ...and, to relabel, beat AST's score for the current category by this factor.
+# Relabels stay within one kind (impulsive to impulsive, sustained to sustained)
+# and never touch a category AST cannot score (car_crash).
+ast_verify_margin: 1.5
+
 # --- Picture flashes (not ViViT) --------------------------------------------
 # Audio peaks on this clip often sit on a boom or a cut, while the fireball is
 # a different frame. Orange-pixel onsets snap gunshot/explosion peaks onto the
@@ -247,7 +261,10 @@ categories:
       - Truck
       - Motor vehicle (road)
       - Idling
-      - Tank
+      # AudioSet has no tank class: a tank drive scores as a heavy engine, and
+      # "Rumble" arrives through the engine_rumble token. Listing "Rumble" here
+      # would also pull in "Stomach rumble" by substring.
+      - Heavy engine (low frequency)
     kinetics_labels:
       - driving car
       - riding a bike
@@ -261,3 +278,63 @@ categories:
     # Sustained rumble — not impulsive, lower confidence threshold handled by encoder_threshold
     impulsive: false
     include_in_haptic_gate: true
+
+  # Hits and heavy drops that are not breaking: punches, thuds, metal clangs.
+  impact:
+    audioset_labels:
+      - Thump, thud
+      - Thunk
+      - Whack, thwack
+      - Slap, smack
+      - Clang
+      - Knock
+      - Bang
+    kinetics_labels: []
+    context_token_labels: []
+    audio_weight: 0.7
+    video_weight: 0.3
+    impulsive: true
+    include_in_haptic_gate: true
+
+  thunder:
+    audioset_labels:
+      - Thunder
+    kinetics_labels: []
+    context_token_labels: []
+    audio_weight: 0.7
+    video_weight: 0.3
+    impulsive: true
+    include_in_haptic_gate: true
+
+  # Sustained, so no rumble cropping (that is vehicle-only): kept out of the gate.
+  aircraft:
+    audioset_labels:
+      - Aircraft
+      - Fixed-wing aircraft, airplane
+      - Helicopter
+      - Propeller, airscrew
+    kinetics_labels: []
+    context_token_labels: []
+    audio_weight: 0.75
+    video_weight: 0.25
+    impulsive: false
+    include_in_haptic_gate: false
+
+  # Detected only, never felt. They claim labels that would otherwise leak by
+  # substring: "Thunderstorm" into thunder, "Hum" into impact ("Thump, thud").
+  thunderstorm:
+    audioset_labels:
+      - Thunderstorm
+    kinetics_labels: []
+    context_token_labels: []
+    impulsive: false
+    include_in_haptic_gate: false
+
+  hum:
+    audioset_labels:
+      - Hum
+      - Mains hum
+    kinetics_labels: []
+    context_token_labels: []
+    impulsive: false
+    include_in_haptic_gate: false

@@ -28,9 +28,16 @@ def test_taxonomy_mapping():
     assert match_label_to_category(tax, "Shatter", "audio") == "smash"
     assert match_label_to_category(tax, "Engine starting", "audio") == "vehicle"
     assert match_label_to_category(tax, "Accelerating, revving, vroom", "audio") == "vehicle"
-    assert match_label_to_category(tax, "Thunder", "audio") is None
+    assert match_label_to_category(tax, "Thump, thud", "audio") == "impact"
+    assert match_label_to_category(tax, "Helicopter", "audio") == "aircraft"
+    assert match_label_to_category(tax, "Thunder", "audio") == "thunder"
+    # Exact matches beat substring ones: these must not leak into thunder / impact
+    assert match_label_to_category(tax, "Thunderstorm", "audio") == "thunderstorm"
+    assert match_label_to_category(tax, "Hum", "audio") == "hum"
     assert match_label_to_category(tax, "Car", "audio") is None
     assert match_label_to_category(tax, "Crash cymbal", "audio") is None
+    assert match_label_to_category(tax, "Stomach rumble", "audio") is None
+    assert match_label_to_category(tax, "Crack", "audio") is None
 
 
 def test_event_mask():

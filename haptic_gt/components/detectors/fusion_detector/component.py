@@ -14,6 +14,7 @@ from typing import Any
 
 from haptic_gt.core.contracts import DetectionResult, Event
 
+from .ast_verify import normalize_mode
 from .branches import VISUAL_CONTEXT_NAME
 from .detector import EVENTS_JSON_NAME, detect_events
 from .frozen_fusion import DetectedEvent
@@ -50,6 +51,8 @@ def to_event(ev: DetectedEvent, taxonomy: Taxonomy, gate_categories: list[str]) 
         extra["attack_prominence"] = ev.attack_prominence
     if ev.visual_categories:
         extra["visual_categories"] = list(ev.visual_categories)
+    if ev.ast is not None:
+        extra["ast"] = dict(ev.ast)
     return Event(
         category=ev.category,
         label=ev.label,
@@ -72,6 +75,7 @@ class Component:
         use_qwen: bool | None = None,
         full_scan: bool = False,
         manual_rumble_peaks: list[float] | None = None,
+        ast_verify: str | bool | None = None,
     ):
         """
         ``gate_categories``: categories that drive the haptics (default: those with
@@ -79,12 +83,15 @@ class Component:
         the video branch (default: on only with ``visual_scenes_enabled`` and a GPU
         of at least ``visual_scenes_min_gpu_gb``, so off on a T4). ``manual_rumble_peaks``:
         hand-marked rumble times that replace auto-detected ``vehicle`` spans.
+        ``ast_verify``: ``off`` (default), ``annotate`` or ``relabel``; AST checks
+        each event's category at the timing found (see ``ast_verify.py``).
         """
         self.taxonomy_path = taxonomy_path
         self.gate_categories = gate_categories
         self.use_qwen = use_qwen
         self.full_scan = full_scan
         self.manual_rumble_peaks = manual_rumble_peaks
+        self.ast_verify = normalize_mode(ast_verify)
 
     def detect(self, video_path: Path | None, source_wav: Path, workdir: Path) -> DetectionResult:
         taxonomy = load_taxonomy(self.taxonomy_path)
@@ -106,6 +113,7 @@ class Component:
         else:
             use_qwen, qwen_reason = self.use_qwen, "set in pipeline params"
         print(f"Qwen scene labels: {'on' if use_qwen else 'off'} ({qwen_reason})")
+        print(f"AST category check: {self.ast_verify}")
 
         result = detect_events(
             video_path,
@@ -116,6 +124,7 @@ class Component:
             gate_categories=self.gate_categories,
             full_scan=self.full_scan,
             use_qwen=use_qwen,
+            ast_verify=self.ast_verify,
         )
         events = result.events
         if self.manual_rumble_peaks:

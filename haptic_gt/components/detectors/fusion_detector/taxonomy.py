@@ -93,6 +93,11 @@ class Taxonomy:
     sed_min_event_sec_sustained: float = 0.40
     sed_merge_gap_sec: float = 0.20
     sed_peak_rel: float = 0.60
+    # AST second opinion on each final event's category (detector param ast_verify)
+    ast_verify_window_sec: float = 1.0
+    ast_verify_sustained_max_sec: float = 3.0
+    ast_verify_min_score: float = 0.30
+    ast_verify_margin: float = 1.5
     # Orange/fireball onsets from pixels (not ViViT). Snaps impulsive peaks
     # onto the picture so a montage cut or late boom does not fire off-screen.
     visual_flash_enabled: bool = True
@@ -242,6 +247,10 @@ def load_taxonomy(path: str | Path | None = None) -> Taxonomy:
         sed_min_event_sec_sustained=float(raw.get("sed_min_event_sec_sustained", 0.40)),
         sed_merge_gap_sec=float(raw.get("sed_merge_gap_sec", 0.20)),
         sed_peak_rel=float(raw.get("sed_peak_rel", 0.60)),
+        ast_verify_window_sec=float(raw.get("ast_verify_window_sec", 1.0)),
+        ast_verify_sustained_max_sec=float(raw.get("ast_verify_sustained_max_sec", 3.0)),
+        ast_verify_min_score=float(raw.get("ast_verify_min_score", 0.30)),
+        ast_verify_margin=float(raw.get("ast_verify_margin", 1.5)),
         visual_flash_enabled=bool(raw.get("visual_flash_enabled", True)),
         visual_flash_min_d_warm=float(raw.get("visual_flash_min_d_warm", 0.025)),
         visual_flash_min_warm=float(raw.get("visual_flash_min_warm", 0.025)),
@@ -267,24 +276,33 @@ def load_taxonomy(path: str | Path | None = None) -> Taxonomy:
     )
 
 
+def _label_pool(cat: CategoryConfig, source: str) -> list[str]:
+    if source in ("audio", "context") or source == "audioset":
+        return cat.audioset_labels + cat.context_token_labels
+    if source in ("video", "kinetics"):
+        return cat.kinetics_labels
+    if source == "context_token":
+        return cat.context_token_labels
+    return cat.audioset_labels + cat.kinetics_labels + cat.context_token_labels
+
+
 def match_label_to_category(taxonomy: Taxonomy, label: str, source: str) -> str | None:
-    """Map a raw model label to a taxonomy category name, or None."""
+    """Map a raw model label to a taxonomy category name, or None.
+
+    An exact match in any category wins over a substring match, so a category
+    can claim a short AudioSet label ("Hum") that is a substring of another
+    category's label ("Thump, thud").
+    """
     norm = _normalize(label)
-    for cat_name, cat in taxonomy.categories.items():
-        if source in ("audio", "context") or source == "audioset":
-            pool = cat.audioset_labels + cat.context_token_labels
-        elif source in ("video", "kinetics"):
-            pool = cat.kinetics_labels
-        elif source == "context_token":
-            pool = cat.context_token_labels
-        else:
-            pool = (
-                cat.audioset_labels
-                + cat.kinetics_labels
-                + cat.context_token_labels
-            )
-        for candidate in pool:
-            c_norm = _normalize(candidate)
-            if norm == c_norm or c_norm in norm or norm in c_norm:
+    pools = {
+        name: [_normalize(c) for c in _label_pool(cat, source)]
+        for name, cat in taxonomy.categories.items()
+    }
+    for cat_name, pool in pools.items():
+        if norm in pool:
+            return cat_name
+    for cat_name, pool in pools.items():
+        for c_norm in pool:
+            if c_norm in norm or norm in c_norm:
                 return cat_name
     return None
