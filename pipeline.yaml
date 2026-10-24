@@ -12,8 +12,10 @@ detector:
     use_qwen: null              # Qwen scene labels; null = on only with a >= 20 GB GPU (off on T4)
     gate_categories: null       # null = categories with include_in_haptic_gate in taxonomy.yaml
     manual_rumble_peaks: null   # e.g. [3.2, 7.9] to replace auto vehicle spans
-    ast_verify: filter          # AST checks each event's category (timing kept): relabels clear mistakes,
-                                # gates out events it hears none of our sounds in. null = off
+    ast_verify: relabel         # AST checks each event's category (timing kept) and relabels clear
+                                # mistakes; never stops an event vibrating. "filter" also gates out
+                                # events AST does not hear, but drops real shots under music or in
+                                # distant/windy recordings. null = off
 
 # Alternative: hand-labelled events instead of detection.
 # detector:

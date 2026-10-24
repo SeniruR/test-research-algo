@@ -129,8 +129,10 @@ ast_verify_context_sec: 4.0
 ast_verify_min_score: 0.30
 # ...and below this in both windows, AST hears none of our categories: filter
 # mode gates the event out (unless an orange flash or scene label backs it).
-# Video 6: the gunfire under dialogue reached 0.21-0.34, the quiet music hits
-# 0.02-0.19, so this sits in a narrow gap; check gated_out events on new clips.
+# No threshold separates real shots from other sounds: video 6's shots and
+# reloads under music scored 0.08-0.19, and the VR8 shooting test (distant,
+# windy camera mic) had runs of real shots at 0.03-0.19. That is why filter is
+# not the default.
 ast_verify_filter_score: 0.20
 # To relabel, the short window's best other category must beat AST's score for
 # the current one by this factor. Relabels stay within one kind (impulsive to

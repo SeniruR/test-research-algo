@@ -64,7 +64,7 @@ one component folder cannot break another.
 ```yaml
 detector:
   name: fusion_detector
-  params: { use_qwen: null, gate_categories: null, manual_rumble_peaks: null, ast_verify: filter }
+  params: { use_qwen: null, gate_categories: null, manual_rumble_peaks: null, ast_verify: relabel }
 
 generators:
   - name: a_perception_mapping
@@ -213,7 +213,10 @@ for the event's own category, and a status (`agree`, `relabeled`, `disagree`,
 the short window clearly favours it (`ast_verify_margin`) and it is the same kind,
 impulsive or sustained. `filter` also takes `unconfirmed` events (AST hears none of
 our categories in either window) out of the haptic gate, unless an orange flash or
-a scene label backs them; they stay in `events.json` with `gated_out: true`.
+a scene label backs them; they stay in `events.json` with `gated_out: true`. It is
+off by default (`relabel` is the default): AST misses real shots under music and in
+distant or windy recordings (VR8 shooting test: 24 of 58 events gated out, most of
+them shots).
 `car_crash`, which AST cannot hear, is never changed, and timing never is. The
 counts are under `detector.ast_verify`; thresholds are the `ast_verify_*` keys in
 `taxonomy.yaml`.
