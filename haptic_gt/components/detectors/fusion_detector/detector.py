@@ -15,7 +15,7 @@ from .branches import (
 from .context_detectors import symbolic_tokens_from_scores
 from .encoders import run_encoder_pass
 from .frozen_fusion import DetectedEvent, dedupe_events_by_peak, fuse_events
-from .fusion import fuse_branches
+from .fusion import annotate_scene_labels, fuse_branches
 from .mask import (
     apply_gate,
     event_included_in_gate,
@@ -317,7 +317,7 @@ def _detect_via_branches(
 
     events, fusion_report = fuse_branches(audio, video, source_wav, taxonomy)
     before = len(events)
-    events = split_rapid_fire(events, source_wav, taxonomy)
+    events = annotate_scene_labels(split_rapid_fire(events, source_wav, taxonomy), video.scenes)
     fusion_report["rapid_fire_added"] = len(events) - before
     ast_report: dict = {"mode": "off"}
     if ast_verify != "off":
