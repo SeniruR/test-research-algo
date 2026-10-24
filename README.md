@@ -270,6 +270,20 @@ python -c "from haptic_gt import run_pipeline; print(run_pipeline(None, 'clip.mp
 
 `run_pipeline(None, ...)` uses `pipeline.yaml` as is.
 
+## Trimmed videos
+
+Detection on a trimmed copy gives different vibrations (thresholds come from the
+whole clip; a re-encoded picture changes the flash scan and scene labels). Run the
+pipeline on the full video instead, then cut its outputs to the trim:
+
+```bash
+python scripts/trim_outputs.py FULL_RESULT_FOLDER trimmed.mp4 OUT_FOLDER --zip
+```
+
+The cuts are found by matching the trimmed soundtrack against the full one, so the
+trim must keep the original sound (no added music or new mix); the script refuses
+clips that do not match.
+
 ## Tests and regression check
 
 ```bash
