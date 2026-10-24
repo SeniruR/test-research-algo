@@ -64,7 +64,7 @@ one component folder cannot break another.
 ```yaml
 detector:
   name: fusion_detector
-  params: { use_qwen: null, gate_categories: null, manual_rumble_peaks: null }
+  params: { use_qwen: null, gate_categories: null, manual_rumble_peaks: null, ast_verify: filter }
 
 generators:
   - name: a_perception_mapping
