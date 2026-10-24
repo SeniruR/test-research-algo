@@ -110,6 +110,26 @@ sed_merge_gap_sec: 0.20
 # Splitting a volley: a shot peak must reach this fraction of the span's strongest
 sed_peak_rel: 0.60
 
+# --- Rapid fire ---------------------------------------------------------------
+# Everything above keeps one bang per impulsive_min_peak_distance_sec (0.45 s),
+# so a cannon's boom and decay bumps never become extra shots. Deadshot fires
+# every ~0.33 s, and every second shot was merged into the one before it. After
+# fusion, a sharp attack after a shot of these categories and before the next
+# one becomes a shot of its own when it rises this far above the moment before it
+# (decay bumps rise 1-2.9x, real shots 4x and more) and reaches this fraction of
+# the shot before it. Explosion is left out: its booms and debris are the case
+# the 0.45 s rule exists for.
+rapid_fire_categories: [gunshot]
+# 0.15 s also split off echoes 0.16 s after a shot (Deadshot's range walls);
+# 0.25 s still separates fire every 0.33 s.
+rapid_fire_min_gap_sec: 0.25
+rapid_fire_window_sec: 1.0
+rapid_fire_prominence: 4.0
+rapid_fire_rel_level: 0.5
+# Silence kept between consecutive accents of those categories. Without it two
+# shots 0.33 s apart render as one 0.5 s buzz.
+impulsive_accent_gap_sec: 0.06
+
 # --- AST second opinion (detector param ast_verify) -------------------------
 # PANNs places events precisely but labels them less accurately than AST
 # (AudioSet mAP 0.385 vs 0.459). With ast_verify on, AST scores two windows per

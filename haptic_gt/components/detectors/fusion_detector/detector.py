@@ -27,6 +27,7 @@ from .proposals import propose_all_windows
 from .impulsive_nms import (
     measure_impulsive_attacks,
     snap_impulsive_peaks_to_attacks,
+    split_rapid_fire,
     suppress_impulsive_overlaps,
 )
 from .impulsive_promote import promote_impulsive_transients
@@ -315,6 +316,9 @@ def _detect_via_branches(
         write_visual_context(video, output_dir, video_name=video_path.name)
 
     events, fusion_report = fuse_branches(audio, video, source_wav, taxonomy)
+    before = len(events)
+    events = split_rapid_fire(events, source_wav, taxonomy)
+    fusion_report["rapid_fire_added"] = len(events) - before
     ast_report: dict = {"mode": "off"}
     if ast_verify != "off":
         # Runs after Qwen, which has freed the GPU by now

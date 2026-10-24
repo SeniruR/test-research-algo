@@ -93,6 +93,13 @@ class Taxonomy:
     sed_min_event_sec_sustained: float = 0.40
     sed_merge_gap_sec: float = 0.20
     sed_peak_rel: float = 0.60
+    # Rapid fire: shots closer than impulsive_min_peak_distance_sec
+    rapid_fire_categories: tuple[str, ...] = ("gunshot",)
+    rapid_fire_min_gap_sec: float = 0.25
+    rapid_fire_window_sec: float = 1.0
+    rapid_fire_prominence: float = 4.0
+    rapid_fire_rel_level: float = 0.5
+    impulsive_accent_gap_sec: float = 0.06
     # AST second opinion on each final event's category (detector param ast_verify)
     ast_verify_window_sec: float = 1.0
     ast_verify_sustained_window_sec: float = 2.0
@@ -249,6 +256,12 @@ def load_taxonomy(path: str | Path | None = None) -> Taxonomy:
         sed_min_event_sec_sustained=float(raw.get("sed_min_event_sec_sustained", 0.40)),
         sed_merge_gap_sec=float(raw.get("sed_merge_gap_sec", 0.20)),
         sed_peak_rel=float(raw.get("sed_peak_rel", 0.60)),
+        rapid_fire_categories=tuple(raw.get("rapid_fire_categories", ("gunshot",)) or ()),
+        rapid_fire_min_gap_sec=float(raw.get("rapid_fire_min_gap_sec", 0.25)),
+        rapid_fire_window_sec=float(raw.get("rapid_fire_window_sec", 1.0)),
+        rapid_fire_prominence=float(raw.get("rapid_fire_prominence", 4.0)),
+        rapid_fire_rel_level=float(raw.get("rapid_fire_rel_level", 0.5)),
+        impulsive_accent_gap_sec=float(raw.get("impulsive_accent_gap_sec", 0.06)),
         ast_verify_window_sec=float(raw.get("ast_verify_window_sec", 1.0)),
         ast_verify_sustained_window_sec=float(raw.get("ast_verify_sustained_window_sec", 2.0)),
         ast_verify_context_sec=float(raw.get("ast_verify_context_sec", 4.0)),

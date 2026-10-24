@@ -243,6 +243,87 @@ def suppress_impulsive_overlaps(
     return out
 
 
+def split_rapid_fire(
+    events: list[DetectedEvent],
+    source_wav: str | Path,
+    taxonomy: Taxonomy | None = None,
+) -> list[DetectedEvent]:
+    """Add the shots of a burst that the one-bang-per-spacing rules merged away.
+
+    Everything upstream keeps one bang per ``impulsive_min_peak_distance_sec``
+    (0.45 s) so a cannon's boom and its decay bumps never become extra shots.
+    A rifle fired every 0.33 s loses every second shot to that. After each shot
+    in ``rapid_fire_categories``, a later sharp attack before the next shot (and
+    within ``rapid_fire_window_sec`` of the last shot found) counts as a shot of
+    its own only if it looks like one by itself: it rises
+    ``rapid_fire_prominence`` above the moment before it (decay bumps rise 1-2.9x,
+    real shots 4x and more) and reaches ``rapid_fire_rel_level`` of the shot
+    before it. Then consecutive accents are kept ``impulsive_accent_gap_sec``
+    apart, so a burst is felt as separate pulses instead of one long buzz.
+    """
+    taxonomy = taxonomy or load_taxonomy()
+    cats = set(taxonomy.rapid_fire_categories)
+    if not cats or not any(e.category in cats for e in events):
+        return list(events)
+
+    attacks = _Attacks(Path(source_wav), taxonomy)
+    if attacks.flux.size < 3:
+        return list(events)
+    local_max = attacks.times[_local_max_indices(attacks.flux)]
+    min_gap = taxonomy.rapid_fire_min_gap_sec
+    pre_roll = taxonomy.impulsive_pre_roll_sec
+    half = taxonomy.impulsive_event_half_width_sec
+
+    impulsive = sorted(
+        (e for e in events if _is_impulsive(e, taxonomy)), key=lambda e: e.peak_sec
+    )
+    peaks = [e.peak_sec for e in impulsive]
+    added: list[DetectedEvent] = []
+    for i, ev in enumerate(impulsive):
+        if ev.category not in cats:
+            continue
+        next_peak = peaks[i + 1] if i + 1 < len(peaks) else attacks.duration_sec + min_gap
+        floor = taxonomy.rapid_fire_rel_level * attacks.level(ev.peak_sec)
+        t = ev.peak_sec
+        while True:
+            limit = min(t + taxonomy.rapid_fire_window_sec, next_peak - min_gap)
+            shot = next(
+                (
+                    float(pt)
+                    for pt in local_max
+                    if t + min_gap <= pt <= limit
+                    and attacks.prominence(float(pt)) >= taxonomy.rapid_fire_prominence
+                    and attacks.level(float(pt)) >= floor
+                ),
+                None,
+            )
+            if shot is None:
+                break
+            start = max(0.0, shot - pre_roll)
+            added.append(
+                DetectedEvent(
+                    category=ev.category,
+                    label=ev.label,
+                    start_sec=start,
+                    peak_sec=shot,
+                    end_sec=min(attacks.duration_sec, max(shot + half, start + 0.2)),
+                    confidence=ev.confidence,
+                    audio_score=ev.audio_score,
+                    sources=["audio", "flux", "rapid_fire"],
+                )
+            )
+            t = shot
+
+    out = list(events) + added
+    burst = sorted((e for e in out if e.category in cats), key=lambda e: e.peak_sec)
+    gap = taxonomy.impulsive_accent_gap_sec
+    for cur, nxt in zip(burst, burst[1:]):
+        if cur.end_sec > nxt.start_sec - gap:
+            cur.end_sec = max(nxt.start_sec - gap, cur.peak_sec + 0.05)
+    out.sort(key=lambda e: e.start_sec)
+    return out
+
+
 def measure_impulsive_attacks(
     events: list[DetectedEvent],
     source_wav: str | Path,

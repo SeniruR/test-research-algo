@@ -194,7 +194,11 @@ categories stay out of the gate unless you add them via `gate_categories`.
 
 Audio branch: framewise sound-event detection with PANNs (`panns-inference`,
 ~10 ms frames) or dense AST (`MIT/ast-finetuned-audioset-10-10-0.4593`) as
-fallback, sharpened with spectral-flux onsets. Video branch: orange
+fallback, sharpened with spectral-flux onsets. The audio branch keeps one bang
+per 0.45 s so a cannon's boom is not a second shot; after fusion a rapid-fire pass
+splits `gunshot` bursts back into separate shots (down to 0.25 s apart) when each
+attack looks like a shot on its own, and leaves a short gap between their
+accents (`rapid_fire_*`, `impulsive_accent_gap_sec`). Video branch: orange
 muzzle/explosion flash scan, plus optional Qwen2.5-VL scene labels. With
 `use_qwen: null` (the default) Qwen runs only on a GPU with at least
 `visual_scenes_min_gpu_gb` (20 GB) of memory, so it is skipped on a T4 or CPU
