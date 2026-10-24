@@ -293,7 +293,7 @@ categories:
     # Sustained rumble — not impulsive, lower confidence threshold handled by encoder_threshold
     impulsive: false
     # Out of the gate for now: detected and reported, never felt. Battleship had
-    # 18 vehicle spans AST mostly did not hear as vehicle (Explosion, Bang, music).
+    # 21 vehicle spans and AST scored none of them above 0.15 as a vehicle.
     # Feel it again for one run with gate_categories, or set this back to true.
     include_in_haptic_gate: false
 
