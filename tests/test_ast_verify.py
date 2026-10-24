@@ -116,11 +116,19 @@ def test_off_does_nothing():
 
 def test_event_windows():
     tax = load_taxonomy()
-    assert event_window(_event("gunshot", 5.0), tax, 20.0) == (4.5, 5.5)
-    long_rumble = _event("vehicle", 10.0, start=2.0, end=18.0)
-    assert event_window(long_rumble, tax, 20.0) == (8.5, 11.5)
-    short_rumble = _event("vehicle", 10.0, start=9.9, end=10.2)
-    assert event_window(short_rumble, tax, 20.0) == (9.5, 10.5)
+
+    def window(ev, duration=20.0):
+        return pytest.approx(event_window(ev, tax, duration))
+
+    assert window(_event("gunshot", 5.0)) == (4.5, 5.5)
+    assert window(_event("vehicle", 10.0, start=2.0, end=18.0)) == (9.0, 11.0)
+    assert window(_event("vehicle", 10.0, start=9.9, end=10.2)) == (9.0, 11.0)
+    # Span ending at its peak (war tank rumble): the window still covers after it
+    assert window(_event("vehicle", 2.592, start=0.092, end=2.592)) == (1.592, 3.592)
+    # Near the clip edges the window slides inside instead of shrinking
+    assert window(_event("vehicle", 0.5, start=0.0, end=2.0)) == (0.0, 2.0)
+    assert window(_event("gunshot", 19.9)) == (19.0, 20.0)
+    assert window(_event("vehicle", 1.0, start=0.0, end=2.0), duration=1.5) == (0.0, 1.5)
 
 
 def test_modes():

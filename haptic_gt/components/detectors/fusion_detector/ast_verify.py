@@ -51,18 +51,19 @@ def normalize_mode(mode: str | bool | None) -> str:
 
 
 def event_window(ev: DetectedEvent, taxonomy: Taxonomy, duration_sec: float) -> tuple[float, float]:
-    """Impulsive: a window centred on the peak. Sustained: the span, capped around the peak."""
+    """A window centred on the peak, slid inside the clip so it keeps its length.
+
+    Sustained events get the longer window and ignore their span: a rumble's
+    span can end at its peak, and a window clipped to it hears only the build-up.
+    """
     cat = taxonomy.categories.get(ev.category)
-    half = taxonomy.ast_verify_window_sec / 2.0
     if cat is not None and cat.impulsive:
-        t0, t1 = ev.peak_sec - half, ev.peak_sec + half
+        width = taxonomy.ast_verify_window_sec
     else:
-        cap = taxonomy.ast_verify_sustained_max_sec / 2.0
-        t0 = max(ev.start_sec, ev.peak_sec - cap)
-        t1 = min(ev.end_sec, ev.peak_sec + cap)
-        if t1 - t0 < 2.0 * half:
-            t0, t1 = ev.peak_sec - half, ev.peak_sec + half
-    return max(0.0, t0), min(duration_sec, t1)
+        width = taxonomy.ast_verify_sustained_window_sec
+    width = min(width, duration_sec)
+    t0 = min(max(0.0, ev.peak_sec - width / 2.0), duration_sec - width)
+    return t0, t0 + width
 
 
 def ast_scorer(clips: list[np.ndarray], taxonomy: Taxonomy, *, batch_size: int = 12) -> list[WindowScores]:

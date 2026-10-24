@@ -113,10 +113,13 @@ sed_peak_rel: 0.60
 # --- AST second opinion (detector param ast_verify) -------------------------
 # PANNs places events precisely but labels them less accurately than AST
 # (AudioSet mAP 0.385 vs 0.459). With ast_verify on, AST scores one window per
-# final event; timing is never changed. Impulsive events get a window centred on
-# the peak; sustained ones their span, capped around the peak.
+# final event; timing is never changed. Every window is centred on the event's
+# peak (slid inside the clip near its edges), never clipped to the event's span:
+# war tank's rumble span ends at its peak, and the 1.5 s before it alone scored
+# Vehicle 0.26 / Explosion 0.26. Centred on the peak it scored Vehicle 0.54 at
+# 2 s, but only 0.30-0.37 at 3-5 s, which reach back into other sounds.
 ast_verify_window_sec: 1.0
-ast_verify_sustained_max_sec: 3.0
+ast_verify_sustained_window_sec: 2.0
 # AST's best category must reach this score to count as an opinion at all...
 ast_verify_min_score: 0.30
 # ...and, to relabel, beat AST's score for the current category by this factor.
