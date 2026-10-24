@@ -96,7 +96,9 @@ class Taxonomy:
     # AST second opinion on each final event's category (detector param ast_verify)
     ast_verify_window_sec: float = 1.0
     ast_verify_sustained_window_sec: float = 2.0
+    ast_verify_context_sec: float = 4.0
     ast_verify_min_score: float = 0.30
+    ast_verify_filter_score: float = 0.20
     ast_verify_margin: float = 1.5
     # Orange/fireball onsets from pixels (not ViViT). Snaps impulsive peaks
     # onto the picture so a montage cut or late boom does not fire off-screen.
@@ -249,7 +251,9 @@ def load_taxonomy(path: str | Path | None = None) -> Taxonomy:
         sed_peak_rel=float(raw.get("sed_peak_rel", 0.60)),
         ast_verify_window_sec=float(raw.get("ast_verify_window_sec", 1.0)),
         ast_verify_sustained_window_sec=float(raw.get("ast_verify_sustained_window_sec", 2.0)),
+        ast_verify_context_sec=float(raw.get("ast_verify_context_sec", 4.0)),
         ast_verify_min_score=float(raw.get("ast_verify_min_score", 0.30)),
+        ast_verify_filter_score=float(raw.get("ast_verify_filter_score", 0.20)),
         ast_verify_margin=float(raw.get("ast_verify_margin", 1.5)),
         visual_flash_enabled=bool(raw.get("visual_flash_enabled", True)),
         visual_flash_min_d_warm=float(raw.get("visual_flash_min_d_warm", 0.025)),

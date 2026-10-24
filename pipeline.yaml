@@ -12,7 +12,7 @@ detector:
     use_qwen: null              # Qwen scene labels; null = on only with a >= 20 GB GPU (off on T4)
     gate_categories: null       # null = categories with include_in_haptic_gate in taxonomy.yaml
     manual_rumble_peaks: null   # e.g. [3.2, 7.9] to replace auto vehicle spans
-    ast_verify: null            # "annotate" or "relabel": AST checks each event's category, timing kept
+    ast_verify: null            # "annotate" / "relabel" / "filter": AST checks each event's category, timing kept
 
 # Alternative: hand-labelled events instead of detection.
 # detector:

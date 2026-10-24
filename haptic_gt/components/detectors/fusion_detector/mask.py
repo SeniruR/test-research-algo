@@ -43,7 +43,7 @@ def events_for_haptic_gate(
     allowed = set(resolve_gate_categories(taxonomy, gate_categories))
     gated: list[DetectedEvent] = []
     for ev in events:
-        if ev.category in allowed:
+        if ev.category in allowed and not ev.excluded_from_gate:
             gated.append(ev)
     return gated
 
@@ -54,7 +54,7 @@ def event_included_in_gate(
     gate_categories: list[str] | None = None,
 ) -> bool:
     allowed = set(resolve_gate_categories(taxonomy, gate_categories))
-    return event.category in allowed
+    return event.category in allowed and not event.excluded_from_gate
 
 
 def apply_gate(

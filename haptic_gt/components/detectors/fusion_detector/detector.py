@@ -140,8 +140,8 @@ def detect_events(
     events.json → optional gated_audio.wav. ``use_qwen`` defaults to
     ``visual_scenes_enabled`` in the taxonomy, and only on a GPU with
     ``visual_scenes_min_gpu_gb`` of memory (so not on a T4). ``ast_verify``
-    (``annotate`` / ``relabel``) has AST check each fused event's category; see
-    ``ast_verify.py``.
+    (``annotate`` / ``relabel`` / ``filter``) has AST check each fused event's
+    category; see ``ast_verify.py``.
 
     Legacy path (``full_scan`` or ``sed_enabled: false``): sparse onset proposals →
     window tagging → frozen fusion. Kept for comparison; its onsets are only as

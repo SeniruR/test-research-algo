@@ -112,19 +112,29 @@ sed_peak_rel: 0.60
 
 # --- AST second opinion (detector param ast_verify) -------------------------
 # PANNs places events precisely but labels them less accurately than AST
-# (AudioSet mAP 0.385 vs 0.459). With ast_verify on, AST scores one window per
+# (AudioSet mAP 0.385 vs 0.459). With ast_verify on, AST scores two windows per
 # final event; timing is never changed. Every window is centred on the event's
 # peak (slid inside the clip near its edges), never clipped to the event's span:
 # war tank's rumble span ends at its peak, and the 1.5 s before it alone scored
 # Vehicle 0.26 / Explosion 0.26. Centred on the peak it scored Vehicle 0.54 at
 # 2 s, but only 0.30-0.37 at 3-5 s, which reach back into other sounds.
+# The short window says what this sound is, and is the only one that may relabel.
 ast_verify_window_sec: 1.0
 ast_verify_sustained_window_sec: 2.0
-# AST's best category must reach this score to count as an opinion at all...
+# The context window says whether this kind of sound is here at all; either
+# window may confirm. A shot under dialogue scores low in 1 s (Speech wins) and
+# shows in 4 s: video 6 gunfire at 0.17-0.34 in 4 s vs <= 0.19 in 1 s.
+ast_verify_context_sec: 4.0
+# AST's score for the event's category must reach this to agree...
 ast_verify_min_score: 0.30
-# ...and, to relabel, beat AST's score for the current category by this factor.
-# Relabels stay within one kind (impulsive to impulsive, sustained to sustained)
-# and never touch a category AST cannot score (car_crash).
+# ...and below this in both windows, AST hears none of our categories: filter
+# mode gates the event out (unless an orange flash or scene label backs it).
+# Video 6: the gunfire under dialogue reached 0.21-0.34, the quiet music hits
+# 0.02-0.19, so this sits in a narrow gap; check gated_out events on new clips.
+ast_verify_filter_score: 0.20
+# To relabel, the short window's best other category must beat AST's score for
+# the current one by this factor. Relabels stay within one kind (impulsive to
+# impulsive, sustained to sustained) and never touch car_crash, which AST cannot score.
 ast_verify_margin: 1.5
 
 # --- Picture flashes (not ViViT) --------------------------------------------

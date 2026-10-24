@@ -205,13 +205,17 @@ are printed and recorded under `detector` in `events.json`. Params: `gate_catego
 
 **AST category check (`ast_verify`).** PANNs times events precisely but labels
 them less accurately than AST (AudioSet mAP 0.385 vs 0.459). With `ast_verify:
-annotate`, AST scores one window per final event and each event gets an `ast`
-record in `events.json` (AST's best category and label, its score, AST's score
-for the event's own category, and a status: `agree`, `disagree`, `unconfirmed`,
-`not_scorable`). `relabel` also takes AST's category when it clearly wins
-(`ast_verify_margin`) and is the same kind, impulsive or sustained; `car_crash`,
-which AST cannot hear, is never changed. Timing is never changed. The counts are
-under `detector.ast_verify`; thresholds are the `ast_verify_*` keys in
+annotate`, AST scores two windows around each final event's peak, a short one (1 s,
+2 s for sustained sounds) and a 4 s context one, and each event gets an `ast`
+record in `events.json`: AST's best category and label, its score, AST's score
+for the event's own category, and a status (`agree`, `relabeled`, `disagree`,
+`weak`, `unconfirmed`, `not_scorable`). `relabel` also takes AST's category when
+the short window clearly favours it (`ast_verify_margin`) and it is the same kind,
+impulsive or sustained. `filter` also takes `unconfirmed` events (AST hears none of
+our categories in either window) out of the haptic gate, unless an orange flash or
+a scene label backs them; they stay in `events.json` with `gated_out: true`.
+`car_crash`, which AST cannot hear, is never changed, and timing never is. The
+counts are under `detector.ast_verify`; thresholds are the `ast_verify_*` keys in
 `taxonomy.yaml`.
 
 ## manual_events detector

@@ -61,7 +61,7 @@ def to_event(ev: DetectedEvent, taxonomy: Taxonomy, gate_categories: list[str]) 
         end_sec=ev.end_sec,
         confidence=ev.confidence,
         impulsive=bool(cat is not None and cat.impulsive),
-        in_gate=ev.category in gate_categories,
+        in_gate=ev.category in gate_categories and not ev.excluded_from_gate,
         sources=list(ev.sources),
         extra=extra,
     )
@@ -83,8 +83,8 @@ class Component:
         the video branch (default: on only with ``visual_scenes_enabled`` and a GPU
         of at least ``visual_scenes_min_gpu_gb``, so off on a T4). ``manual_rumble_peaks``:
         hand-marked rumble times that replace auto-detected ``vehicle`` spans.
-        ``ast_verify``: ``off`` (default), ``annotate`` or ``relabel``; AST checks
-        each event's category at the timing found (see ``ast_verify.py``).
+        ``ast_verify``: ``off`` (default), ``annotate``, ``relabel`` or ``filter``;
+        AST checks each event's category at the timing found (see ``ast_verify.py``).
         """
         self.taxonomy_path = taxonomy_path
         self.gate_categories = gate_categories

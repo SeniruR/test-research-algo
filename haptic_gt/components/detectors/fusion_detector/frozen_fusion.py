@@ -30,6 +30,8 @@ class DetectedEvent:
     visual_categories: list[str] = field(default_factory=list)
     #: AST's verdict on the category (``ast_verify``), or None when it did not run.
     ast: dict | None = None
+    #: Kept in the report but never felt, whatever its category (``ast_verify: filter``).
+    excluded_from_gate: bool = False
 
 
 def _best_encoder_scores(
