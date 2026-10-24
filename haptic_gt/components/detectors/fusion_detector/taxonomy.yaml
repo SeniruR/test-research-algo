@@ -292,7 +292,10 @@ categories:
     video_weight: 0.25
     # Sustained rumble — not impulsive, lower confidence threshold handled by encoder_threshold
     impulsive: false
-    include_in_haptic_gate: true
+    # Out of the gate for now: detected and reported, never felt. Battleship had
+    # 18 vehicle spans AST mostly did not hear as vehicle (Explosion, Bang, music).
+    # Feel it again for one run with gate_categories, or set this back to true.
+    include_in_haptic_gate: false
 
   # Hits and heavy drops that are not breaking: punches, thuds, metal clangs.
   impact:

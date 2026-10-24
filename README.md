@@ -180,7 +180,7 @@ Categories, gate defaults and every threshold live in
 | `explosion` | impulsive | yes |
 | `smash` | impulsive | yes |
 | `car_crash` | impulsive | yes |
-| `vehicle` | sustained (rumble) | yes |
+| `vehicle` | sustained (rumble) | no, for now (detected only) |
 | `impact` | impulsive (thud, whack, clang, knock, bang) | yes |
 | `thunder` | impulsive | yes |
 | `aircraft` | sustained | no |

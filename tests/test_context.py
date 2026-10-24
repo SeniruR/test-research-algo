@@ -104,8 +104,7 @@ def test_gate_categories_override():
         ),
     ]
     default_gate = events_for_haptic_gate(events, tax)
-    assert len(default_gate) == 2
-    assert {e.category for e in default_gate} == {"vehicle", "gunshot"}
+    assert [e.category for e in default_gate] == ["gunshot"]
 
     custom_gate = events_for_haptic_gate(
         events, tax, gate_categories=["vehicle", "smash"]
@@ -135,7 +134,7 @@ def test_resolve_gate_categories_default():
     cats = resolve_gate_categories(tax)
     assert "gunshot" in cats
     assert "explosion" in cats
-    assert "vehicle" in cats
+    assert "vehicle" not in cats
     assert "smash" in cats
     assert "car_crash" in cats
     assert "weather" not in cats
